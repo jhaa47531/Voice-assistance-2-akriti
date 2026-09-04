@@ -1,0 +1,7 @@
+{
+  "name": "Akriti",
+  "description": "Personal AI voice assistant for Android with multilingual voice conversation, continuous hands-free dialogue, multimodal visual Q&A, voice notes, and safe phone control.",
+  "requestFramePermissions": ["microphone", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+

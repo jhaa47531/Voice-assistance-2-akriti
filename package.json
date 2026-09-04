@@ -1,0 +1,13 @@
+{
+  "name": "akriti",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node server.ts",
+    "start": "node server.ts",
+    "build": "echo 'Build complete'"
+  },
+  "dependencies": {
+    "@google/genai": "^0.1.1"
+  }
+}
