@@ -44,9 +44,19 @@ class SettingsRepository(context: Context) {
         val legacyCustomKey = prefs.getString("customApiKey", "") ?: ""
         val savedGeminiKey = prefs.getString("geminiApiKey", "") ?: legacyCustomKey
 
+        val rawSavedModel = prefs.getString("model", null).orEmpty()
+        val effectiveModel = if (rawSavedModel.isNotBlank() && AiModels.isModelValid(provider, rawSavedModel)) {
+            rawSavedModel
+        } else {
+            // Automatically migrate invalid or deprecated model (e.g. mixtral-8x7b-32768)
+            val defaultModel = AiModels.getDefaultModel(provider)
+            prefs.edit().putString("model", defaultModel).apply()
+            defaultModel
+        }
+
         return AssistantSettings(
             provider = provider,
-            model = prefs.getString("model", AiModels.getDefaultModel(provider)) ?: AiModels.getDefaultModel(provider),
+            model = effectiveModel,
             languageCode = prefs.getString("languageCode", "auto") ?: "auto",
             speechRate = prefs.getFloat("speechRate", 1.0f),
             speechPitch = prefs.getFloat("speechPitch", 1.0f),
@@ -63,24 +73,26 @@ class SettingsRepository(context: Context) {
     }
 
     fun updateSettings(newSettings: AssistantSettings) {
+        val validatedModel = AiModels.normalizeModel(newSettings.provider, newSettings.model)
+        val sanitizedSettings = newSettings.copy(model = validatedModel)
         prefs.edit().apply {
-            putString("provider", newSettings.provider.name)
-            putString("model", newSettings.model)
-            putString("languageCode", newSettings.languageCode)
-            putFloat("speechRate", newSettings.speechRate)
-            putFloat("speechPitch", newSettings.speechPitch)
-            putBoolean("autoSpeak", newSettings.autoSpeak)
-            putBoolean("continuousConversation", newSettings.continuousConversation)
-            putBoolean("instantLocalExecution", newSettings.instantLocalExecution)
-            putBoolean("autoFallback", newSettings.autoFallback)
-            putBoolean("alwaysListeningMode", newSettings.alwaysListeningMode)
-            putString("geminiApiKey", newSettings.geminiApiKey)
-            putString("groqApiKey", newSettings.groqApiKey)
-            putString("openRouterApiKey", newSettings.openRouterApiKey)
-            putString("customApiKey", newSettings.geminiApiKey) // Keep in sync
+            putString("provider", sanitizedSettings.provider.name)
+            putString("model", sanitizedSettings.model)
+            putString("languageCode", sanitizedSettings.languageCode)
+            putFloat("speechRate", sanitizedSettings.speechRate)
+            putFloat("speechPitch", sanitizedSettings.speechPitch)
+            putBoolean("autoSpeak", sanitizedSettings.autoSpeak)
+            putBoolean("continuousConversation", sanitizedSettings.continuousConversation)
+            putBoolean("instantLocalExecution", sanitizedSettings.instantLocalExecution)
+            putBoolean("autoFallback", sanitizedSettings.autoFallback)
+            putBoolean("alwaysListeningMode", sanitizedSettings.alwaysListeningMode)
+            putString("geminiApiKey", sanitizedSettings.geminiApiKey)
+            putString("groqApiKey", sanitizedSettings.groqApiKey)
+            putString("openRouterApiKey", sanitizedSettings.openRouterApiKey)
+            putString("customApiKey", sanitizedSettings.geminiApiKey) // Keep in sync
             apply()
         }
-        _settings.value = newSettings
+        _settings.value = sanitizedSettings
     }
 
     fun replaceApiKey(provider: AiProviderType, newKey: String) {

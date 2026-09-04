@@ -57,22 +57,22 @@ class SpeechToTextManager(
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
 
                 // Tuning for long voice queries and pauses
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 3500L)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1800L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 3000L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1800L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1400L)
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                // High-accuracy Hinglish / Indian speech recognition configuration
+                val (primaryLocale, additionalLocales) = when (languageCode) {
+                    "hi-IN" -> Pair("hi-IN", arrayOf("en-IN"))
+                    "en-IN" -> Pair("en-IN", arrayOf("hi-IN"))
+                    "en-US" -> Pair("en-US", arrayOf("en-IN", "hi-IN"))
+                    else -> Pair("en-IN", arrayOf("hi-IN", "en-US"))
                 }
-
-                val targetLocale = when (languageCode) {
-                    "hi-IN" -> "hi-IN"
-                    "en-IN" -> "en-IN"
-                    "en-US" -> "en-US"
-                    else -> Locale.getDefault().toLanguageTag()
-                }
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, targetLocale)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, targetLocale)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, primaryLocale)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, primaryLocale)
+                putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", additionalLocales)
+                putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, false)
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
             }
 
             _partialText.value = ""
@@ -86,9 +86,21 @@ class SpeechToTextManager(
         }
     }
 
-    fun stopListening() {
+    /**
+     * Asks the recognizer to stop recording more audio and finalize whatever speech
+     * was spoken so far, delivering results via onResults.
+     */
+    fun finishListening() {
         try {
             speechRecognizer?.stopListening()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error finishing recognizer", e)
+            stopListening()
+        }
+    }
+
+    fun stopListening() {
+        try {
             speechRecognizer?.cancel()
             speechRecognizer?.destroy()
         } catch (e: Exception) {
@@ -97,6 +109,8 @@ class SpeechToTextManager(
             speechRecognizer = null
             _isListening.value = false
             _rmsDb.value = 0f
+            _partialText.value = ""
+            lastRecordedText = ""
         }
     }
 
@@ -125,18 +139,10 @@ class SpeechToTextManager(
             override fun onError(errorCode: Int) {
                 _isListening.value = false
                 _rmsDb.value = 0f
+                _partialText.value = ""
+                lastRecordedText = ""
 
-                // If recognizer failed with NO_MATCH or SPEECH_TIMEOUT, but we have accumulated partial speech,
-                // save the utterance instead of discarding it!
-                if ((errorCode == SpeechRecognizer.ERROR_NO_MATCH || errorCode == SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
-                    && lastRecordedText.isNotBlank()) {
-                    val fallbackSpoken = lastRecordedText
-                    lastRecordedText = ""
-                    _partialText.value = fallbackSpoken
-                    onResult(fallbackSpoken)
-                    return
-                }
-
+                // Strictly do NOT treat partial results as final command on error!
                 val errorMessage = when (errorCode) {
                     SpeechRecognizer.ERROR_AUDIO -> "Audio recording error. Check microphone."
                     SpeechRecognizer.ERROR_CLIENT -> "Client error in speech service."
@@ -151,7 +157,7 @@ class SpeechToTextManager(
                 }
 
                 if (errorCode == SpeechRecognizer.ERROR_NO_MATCH || errorCode == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
-                    _partialText.value = ""
+                    onError("Kuch sunaai nahi diya, kripya dobara bolein.")
                 } else {
                     onError(errorMessage)
                 }
@@ -161,15 +167,17 @@ class SpeechToTextManager(
                 _isListening.value = false
                 _rmsDb.value = 0f
 
-                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                val spokenText = matches?.firstOrNull()?.trim().orEmpty()
-                val finalText = if (spokenText.isNotBlank()) spokenText else lastRecordedText
+                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty()
+                val finalText = VoiceRecognitionCorrector.selectBestCandidate(context, matches)
 
                 if (finalText.isNotBlank()) {
                     _partialText.value = finalText
                     lastRecordedText = ""
+                    // Only dispatch verified final recognized text
                     onResult(finalText)
                 } else {
+                    _partialText.value = ""
+                    lastRecordedText = ""
                     onError("Aawaz samajh nahi aayi, dobara bolein.")
                 }
             }
@@ -179,7 +187,7 @@ class SpeechToTextManager(
                 val text = matches?.firstOrNull()?.trim().orEmpty()
                 if (text.isNotBlank()) {
                     lastRecordedText = text
-                    _partialText.value = text
+                    _partialText.value = text // Live display only, never sent to AI directly
                 }
             }
 

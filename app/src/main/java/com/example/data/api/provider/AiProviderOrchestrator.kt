@@ -71,7 +71,7 @@ class AiProviderOrchestrator(
         for (providerType in configuredProviders) {
             val key = providerKeyMap[providerType].orEmpty().trim()
             val modelToUse = if (providerType == preferredProvider && selectedModel.isNotBlank()) {
-                selectedModel
+                AiModels.normalizeModel(providerType, selectedModel)
             } else {
                 AiModels.getDefaultModel(providerType)
             }

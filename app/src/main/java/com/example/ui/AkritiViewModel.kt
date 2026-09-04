@@ -201,14 +201,8 @@ class AkritiViewModel(application: Application) : AndroidViewModel(application) 
             }
             AssistantState.LISTENING -> {
                 shouldContinueHandsFree = false
-                sttManager.stopListening()
-                val captured = partialTranscript.value.trim()
-                if (captured.isNotBlank()) {
-                    processUserInput(captured)
-                } else {
-                    _assistantState.value = AssistantState.IDLE
-                    _statusText.value = "Tap to speak to Akriti"
-                }
+                _statusText.value = "Finalizing speech..."
+                sttManager.finishListening()
             }
             AssistantState.PROCESSING -> {}
             AssistantState.IDLE, AssistantState.ERROR -> {

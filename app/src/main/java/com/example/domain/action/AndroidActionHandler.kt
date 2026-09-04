@@ -17,6 +17,7 @@ import androidx.core.content.ContextCompat
 import com.example.data.model.ActionType
 import com.example.data.model.IntentCommand
 import com.example.data.repository.VoiceNotesRepository
+import com.example.voice.VoiceRecognitionCorrector
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -448,10 +449,53 @@ class AndroidActionHandler(
                     }
                 }
             }
+
+            // If no exact substring matches were found, safely check for phonetically close or homophone contacts (e.g. "aunt" -> "ansh")
+            if (results.isEmpty()) {
+                val allContacts = getAllDeviceContacts()
+                val fuzzyMatchedName = VoiceRecognitionCorrector.findFuzzyContactMatch(nameQuery, allContacts.map { it.name })
+                if (fuzzyMatchedName != null) {
+                    val matchedContacts = allContacts.filter { it.name.equals(fuzzyMatchedName, ignoreCase = true) }
+                    results.addAll(matchedContacts)
+                }
+            }
         } catch (e: Exception) {
             // Return whatever matches were found
         }
         return results
+    }
+
+    private fun getAllDeviceContacts(): List<ContactMatch> {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            return emptyList()
+        }
+        val list = mutableListOf<ContactMatch>()
+        try {
+            val uri = ContactsContract.CommonDataKinds.Phone.CONTENT_URI
+            val projection = arrayOf(
+                ContactsContract.CommonDataKinds.Phone.CONTACT_ID,
+                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                ContactsContract.CommonDataKinds.Phone.NUMBER
+            )
+            context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                val idIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.CONTACT_ID)
+                val nameIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                val numIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+
+                while (cursor.moveToNext()) {
+                    val id = if (idIndex >= 0) cursor.getString(idIndex) else ""
+                    val name = if (nameIndex >= 0) cursor.getString(nameIndex) else ""
+                    val number = if (numIndex >= 0) cursor.getString(numIndex) else ""
+                    if (name.isNotBlank() && number.isNotBlank()) {
+                        val cleanNum = number.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+                        if (list.none { it.number.replace(" ", "").replace("-", "") == cleanNum && it.name.equals(name, ignoreCase = true) }) {
+                            list.add(ContactMatch(id, name, number))
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return list
     }
 
     private fun sendMessage(recipient: String?, messageBody: String?): ActionResult {

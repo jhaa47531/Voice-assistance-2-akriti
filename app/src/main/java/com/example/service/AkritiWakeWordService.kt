@@ -30,6 +30,7 @@ import com.example.domain.action.ActionResult
 import com.example.domain.action.AndroidActionHandler
 import com.example.domain.intent.IntentRouter
 import com.example.voice.TextToSpeechManager
+import com.example.voice.VoiceRecognitionCorrector
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -182,9 +183,19 @@ class AkritiWakeWordService : Service() {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+
+                // Hinglish / Indian locale configuration
+                val settings = settingsRepository.settings.value
+                val (primaryLocale, additionalLocales) = when (settings.languageCode) {
+                    "hi-IN" -> Pair("hi-IN", arrayOf("en-IN"))
+                    "en-IN" -> Pair("en-IN", arrayOf("hi-IN"))
+                    "en-US" -> Pair("en-US", arrayOf("en-IN", "hi-IN"))
+                    else -> Pair("en-IN", arrayOf("hi-IN", "en-US"))
                 }
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, primaryLocale)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, primaryLocale)
+                putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", additionalLocales)
+                putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, false)
             }
 
             wakeRecognizer?.startListening(intent)
@@ -226,12 +237,12 @@ class AkritiWakeWordService : Service() {
         if (matches == null || isAwaitingCommand) return
 
         val wakeKeywords = listOf("hey akriti", "hello akriti", "ok akriti", "akriti", "sun akriti")
-        for (text in matches) {
-            val lower = text.lowercase(Locale.ROOT)
-            val detected = wakeKeywords.any { lower.contains(it) }
+        for (rawText in matches) {
+            val normalized = VoiceRecognitionCorrector.fixAssistantKeywords(rawText).lowercase(Locale.ROOT)
+            val detected = wakeKeywords.any { normalized.contains(it) }
             if (detected) {
-                Log.d(TAG, "Wake word detected in background: $lower")
-                onWakeWordTriggered(lower)
+                Log.d(TAG, "Wake word detected in background: $normalized")
+                onWakeWordTriggered(normalized)
                 return
             }
         }
@@ -283,10 +294,22 @@ class AkritiWakeWordService : Service() {
                 setRecognitionListener(createCommandListener())
             }
 
+            val settings = settingsRepository.settings.value
+            val (primaryLocale, additionalLocales) = when (settings.languageCode) {
+                "hi-IN" -> Pair("hi-IN", arrayOf("en-IN"))
+                "en-IN" -> Pair("en-IN", arrayOf("hi-IN"))
+                "en-US" -> Pair("en-US", arrayOf("en-IN", "hi-IN"))
+                else -> Pair("en-IN", arrayOf("hi-IN", "en-US"))
+            }
+
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
                 putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 3000L)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, primaryLocale)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, primaryLocale)
+                putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", additionalLocales)
+                putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, false)
             }
 
             wakeRecognizer?.startListening(intent)
@@ -312,8 +335,8 @@ class AkritiWakeWordService : Service() {
 
             override fun onResults(results: Bundle?) {
                 isAwaitingCommand = false
-                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                val command = matches?.firstOrNull()?.trim().orEmpty()
+                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty()
+                val command = VoiceRecognitionCorrector.selectBestCandidate(this@AkritiWakeWordService, matches)
                 if (command.isNotBlank()) {
                     processSpokenCommand(command)
                 } else {

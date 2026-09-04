@@ -31,29 +31,37 @@ object AiModels {
 
     val GROQ_MODELS = listOf(
         AiModelInfo(
-            id = "llama-3.3-70b-versatile",
-            displayName = "Llama 3.3 70B Versatile",
+            id = "openai/gpt-oss-20b",
+            displayName = "GPT-OSS 20B",
             provider = AiProviderType.GROQ,
-            description = "State-of-the-art open model with lightning fast Groq LPU speed"
+            description = "Ultra-fast low-latency reasoning & conversational model on Groq LPU"
+        ),
+        AiModelInfo(
+            id = "openai/gpt-oss-120b",
+            displayName = "GPT-OSS 120B",
+            provider = AiProviderType.GROQ,
+            description = "Flagship high-intelligence reasoning model on Groq"
+        ),
+        AiModelInfo(
+            id = "qwen/qwen3.6-27b",
+            displayName = "Qwen 3.6 27B",
+            provider = AiProviderType.GROQ,
+            description = "High-capability instruction & knowledge model on Groq"
         ),
         AiModelInfo(
             id = "llama-3.1-8b-instant",
             displayName = "Llama 3.1 8B Instant",
             provider = AiProviderType.GROQ,
-            description = "Near-instant speech and command generation"
-        ),
-        AiModelInfo(
-            id = "mixtral-8x7b-32768",
-            displayName = "Mixtral 8x7B",
-            provider = AiProviderType.GROQ,
-            description = "High-efficiency mixture-of-experts model"
-        ),
-        AiModelInfo(
-            id = "gemma2-9b-it",
-            displayName = "Gemma 2 9B IT",
-            provider = AiProviderType.GROQ,
-            description = "Google's lightweight instruction-tuned model running on Groq"
+            description = "Fast, lightweight conversational model"
         )
+    )
+
+    val DEPRECATED_GROQ_MODELS = setOf(
+        "mixtral-8x7b-32768",
+        "llama-3.3-70b-versatile",
+        "gemma2-9b-it",
+        "llama3-70b-8192",
+        "llama-3.1-70b-versatile"
     )
 
     val OPENROUTER_MODELS = listOf(
@@ -91,8 +99,17 @@ object AiModels {
 
     fun getDefaultModel(provider: AiProviderType): String = when (provider) {
         AiProviderType.GEMINI -> "gemini-3.8-flash"
-        AiProviderType.GROQ -> "llama-3.3-70b-versatile"
+        AiProviderType.GROQ -> "openai/gpt-oss-20b"
         AiProviderType.OPENROUTER -> "meta-llama/llama-3.3-70b-instruct"
+    }
+
+    fun isModelValid(provider: AiProviderType, modelId: String): Boolean {
+        if (modelId.isBlank()) return false
+        return getModelsForProvider(provider).any { it.id == modelId }
+    }
+
+    fun normalizeModel(provider: AiProviderType, modelId: String): String {
+        return if (isModelValid(provider, modelId)) modelId else getDefaultModel(provider)
     }
 
     fun getDisplayName(modelId: String): String {

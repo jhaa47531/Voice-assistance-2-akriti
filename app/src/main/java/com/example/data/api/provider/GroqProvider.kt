@@ -1,6 +1,7 @@
 package com.example.data.api.provider
 
 import android.util.Log
+import com.example.data.model.AiModels
 import com.example.data.model.AiProviderType
 import com.example.data.model.ChatMessage
 import com.example.data.model.IntentCommand
@@ -47,7 +48,8 @@ class GroqProvider(
 
         try {
             val rootJson = JSONObject()
-            rootJson.put("model", model.ifBlank { "llama-3.3-70b-versatile" })
+            val effectiveModel = AiModels.normalizeModel(AiProviderType.GROQ, model)
+            rootJson.put("model", effectiveModel)
 
             val messagesArray = JSONArray()
 
