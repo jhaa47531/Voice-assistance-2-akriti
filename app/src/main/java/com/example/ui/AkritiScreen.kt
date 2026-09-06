@@ -7,8 +7,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.launch
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
@@ -41,6 +43,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BatteryChargingFull
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -53,10 +56,13 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
@@ -80,6 +86,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.AssistantState
+import com.example.data.model.PendingAction
 import com.example.ui.components.ChatBubble
 import com.example.ui.components.SettingsSheet
 import com.example.ui.components.VoiceNotesSheet
@@ -110,6 +117,7 @@ fun AkritiScreen(
     val batteryLevel by viewModel.batteryLevel.collectAsState()
     val isCharging by viewModel.isCharging.collectAsState()
     val isTorchOn by viewModel.isTorchOn.collectAsState()
+    val pendingAction by viewModel.pendingAction.collectAsState()
 
     var showSettings by remember { mutableStateOf(false) }
     var textInput by remember { mutableStateOf("") }
@@ -150,16 +158,15 @@ fun AkritiScreen(
     }
 
     val quickPrompts = listOf(
-        "Note karo: Meeting at 5 PM",
-        "Show my notes",
-        "Torch on karo",
-        "Battery kitni hai?",
-        "YouTube open karo",
-        "Alarm lagao 7 AM",
-        "Timer lagao 5 min",
+        "WhatsApp kholo",
+        "YouTube par Kesariya search karo",
+        "Google par DBMS search karo",
         "Wi-Fi settings kholo",
-        "Aaj ki date kya hai?",
-        "नमस्ते अकृति!"
+        "Subah 7 baje alarm lagao",
+        "Battery kitni hai?",
+        "Torch on karo",
+        "Instagram kholo",
+        "Note karo: Meeting at 5 PM"
     )
 
     Scaffold(
@@ -468,6 +475,24 @@ fun AkritiScreen(
                 }
             }
 
+            // Action Confirmation Card (for WhatsApp / Calling / etc.)
+            AnimatedVisibility(
+                visible = pendingAction != null,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                pendingAction?.let { pending ->
+                    ActionConfirmationCard(
+                        pendingAction = pending,
+                        onConfirm = { viewModel.confirmPendingAction() },
+                        onCancel = { viewModel.cancelPendingAction() },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                    )
+                }
+            }
+
             // Quick Prompt Chips
             LazyRow(
                 modifier = Modifier
@@ -717,5 +742,156 @@ fun AkritiScreen(
             },
             onDismiss = { showSettings = false }
         )
+    }
+}
+
+@Composable
+fun ActionConfirmationCard(
+    pendingAction: PendingAction,
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 6.dp,
+        shadowElevation = 4.dp
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                when (pendingAction) {
+                    is PendingAction.SendWhatsAppMessage -> {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color(0xFF25D366).copy(alpha = 0.2f),
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Send,
+                                    contentDescription = "WhatsApp",
+                                    tint = Color(0xFF25D366),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "WhatsApp Message Confirmation",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "To: ${pendingAction.contactName} (${pendingAction.phoneNumber})",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    is PendingAction.MakePhoneCall -> {
+                        Surface(
+                            shape = CircleShape,
+                            color = AkritiIndigoPrimary.copy(alpha = 0.2f),
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Call,
+                                    contentDescription = "Call",
+                                    tint = AkritiIndigoPrimary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Phone Call Confirmation",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Call: ${pendingAction.contactName} (${pendingAction.phoneNumber})",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (pendingAction is PendingAction.SendWhatsAppMessage) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "\"${pendingAction.messageText}\"",
+                        fontSize = 12.sp,
+                        fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedButton(
+                    onClick = onCancel,
+                    shape = RoundedCornerShape(20.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Radd karein", fontSize = 11.sp)
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                Button(
+                    onClick = onConfirm,
+                    shape = RoundedCornerShape(20.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (pendingAction is PendingAction.SendWhatsAppMessage) Color(0xFF25D366) else AkritiIndigoPrimary
+                    ),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                ) {
+                    Icon(
+                        imageVector = if (pendingAction is PendingAction.SendWhatsAppMessage) Icons.AutoMirrored.Filled.Send else Icons.Default.Call,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = if (pendingAction is PendingAction.SendWhatsAppMessage) "Send karein" else "Call lagayein",
+                        fontSize = 11.sp,
+                        color = Color.White
+                    )
+                }
+            }
+        }
     }
 }

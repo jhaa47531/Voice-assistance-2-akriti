@@ -132,9 +132,11 @@ fun ChatBubble(
                             ActionType.TOGGLE_FLASHLIGHT -> Icons.Default.FlashlightOn
                             ActionType.BATTERY_INFO -> Icons.Default.BatteryChargingFull
                             ActionType.DATE_TIME -> Icons.Default.Schedule
-                            ActionType.SET_ALARM, ActionType.SET_TIMER -> Icons.Default.Alarm
-                            ActionType.DIAL_PHONE -> Icons.Default.Call
-                            ActionType.SEND_MESSAGE -> Icons.AutoMirrored.Filled.Message
+                            ActionType.SET_ALARM, ActionType.SET_TIMER, ActionType.SET_REMINDER -> Icons.Default.Alarm
+                            ActionType.DIAL_PHONE, ActionType.CALL_PHONE -> Icons.Default.Call
+                            ActionType.SEND_MESSAGE, ActionType.WHATSAPP_MESSAGE -> Icons.AutoMirrored.Filled.Message
+                            ActionType.WHATSAPP_OPEN -> Icons.AutoMirrored.Filled.Message
+                            ActionType.YOUTUBE_OPEN, ActionType.YOUTUBE_SEARCH -> Icons.Default.PlayArrow
                             ActionType.SEARCH_WEB, ActionType.LAUNCH_URL -> Icons.Default.Language
                             ActionType.TAKE_NOTE, ActionType.SHOW_NOTES -> Icons.AutoMirrored.Filled.Notes
                             else -> Icons.Default.PlayArrow

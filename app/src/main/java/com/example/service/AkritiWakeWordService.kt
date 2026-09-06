@@ -275,7 +275,8 @@ class AkritiWakeWordService : Service() {
                 text = "Haan ji, boliye",
                 pitch = settings.speechPitch,
                 rate = settings.speechRate,
-                languageCode = settings.languageCode
+                languageCode = settings.languageCode,
+                naturalVoice = settings.naturalVoiceEnabled
             )
             // Listen for user command after acknowledging
             serviceScope.launch {
@@ -360,6 +361,7 @@ class AkritiWakeWordService : Service() {
             if (settings.instantLocalExecution && isFastPath) {
                 val actionResult = actionHandler.handleAction(intent)
                 val replyMessage = when (actionResult) {
+                    is ActionResult.RequiresConfirmation -> actionResult.prompt
                     is ActionResult.Handled -> actionResult.message
                     is ActionResult.ExecutedWithInfo -> actionResult.info
                     is ActionResult.Failed -> actionResult.error
@@ -370,7 +372,8 @@ class AkritiWakeWordService : Service() {
                     text = replyMessage,
                     pitch = settings.speechPitch,
                     rate = settings.speechRate,
-                    languageCode = settings.languageCode
+                    languageCode = settings.languageCode,
+                    naturalVoice = settings.naturalVoiceEnabled
                 )
                 return@launch
             }
@@ -397,7 +400,8 @@ class AkritiWakeWordService : Service() {
                     text = data.reply,
                     pitch = settings.speechPitch,
                     rate = settings.speechRate,
-                    languageCode = settings.languageCode
+                    languageCode = settings.languageCode,
+                    naturalVoice = settings.naturalVoiceEnabled
                 )
             } else {
                 val err = aiResult.exceptionOrNull()?.message ?: "AI service respond nahi kar rahi."
@@ -405,7 +409,8 @@ class AkritiWakeWordService : Service() {
                     text = err,
                     pitch = settings.speechPitch,
                     rate = settings.speechRate,
-                    languageCode = settings.languageCode
+                    languageCode = settings.languageCode,
+                    naturalVoice = settings.naturalVoiceEnabled
                 )
             }
         }

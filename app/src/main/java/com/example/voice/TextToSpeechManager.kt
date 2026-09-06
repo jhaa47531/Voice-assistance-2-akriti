@@ -1,9 +1,12 @@
 package com.example.voice
 
 import android.content.Context
+import android.media.AudioAttributes
+import android.os.Build
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.speech.tts.Voice
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -32,7 +35,20 @@ class TextToSpeechManager(
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
             isInitialized = true
-            setupVoiceLocale(Locale.forLanguageTag("hi-IN"))
+
+            // Set voice assistant audio attributes for optimal clarity & ducking
+            try {
+                val audioAttributes = AudioAttributes.Builder()
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                    .build()
+                tts?.setAudioAttributes(audioAttributes)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not set AudioAttributes on TTS", e)
+            }
+
+            // Default to high quality Hindi-English assistant voice
+            setupVoiceLocale(Locale.forLanguageTag("hi-IN"), naturalVoice = true)
 
             tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {
@@ -41,7 +57,6 @@ class TextToSpeechManager(
                 }
 
                 override fun onDone(utteranceId: String?) {
-                    // Only trigger completion when the final chunk has finished speaking
                     if (utteranceId == currentFinalUtteranceId) {
                         _isSpeaking.value = false
                         onSpeakingStateChanged(false)
@@ -65,56 +80,181 @@ class TextToSpeechManager(
         }
     }
 
-    fun setupVoiceLocale(preferredLocale: Locale) {
+    /**
+     * Configures the voice engine for the specified locale and selects the highest quality
+     * natural female neural voice available, with automatic local fallback.
+     */
+    fun setupVoiceLocale(preferredLocale: Locale, naturalVoice: Boolean = true) {
+        val ttsInstance = tts ?: return
         if (!isInitialized) return
+
         try {
-            val result = tts?.setLanguage(preferredLocale)
+            if (naturalVoice) {
+                val bestVoice = selectBestFemaleVoice(ttsInstance, preferredLocale)
+                if (bestVoice != null) {
+                    ttsInstance.voice = bestVoice
+                    return
+                }
+            }
+
+            // Fallback: standard locale configuration
+            val result = ttsInstance.setLanguage(preferredLocale)
             if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
-                val fallbackResult = tts?.setLanguage(Locale.forLanguageTag("en-IN"))
+                val fallbackResult = ttsInstance.setLanguage(Locale.forLanguageTag("en-IN"))
                 if (fallbackResult == TextToSpeech.LANG_MISSING_DATA || fallbackResult == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    tts?.language = Locale.getDefault()
+                    ttsInstance.language = Locale.getDefault()
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Error setting TTS language", e)
+            Log.w(TAG, "Error setting TTS voice/language", e)
         }
     }
 
+    /**
+     * Selects the highest quality natural-sounding female voice from available engine voices.
+     * Prioritizes neural network female voices with low latency and high articulation.
+     */
+    private fun selectBestFemaleVoice(ttsInstance: TextToSpeech, targetLocale: Locale): Voice? {
+        val voices = try {
+            ttsInstance.voices
+        } catch (e: Exception) {
+            null
+        }
+
+        if (voices.isNullOrEmpty()) return null
+
+        val targetLang = targetLocale.language.lowercase(Locale.ROOT)
+        val matchingVoices = voices.filter { voice ->
+            voice.locale.language.equals(targetLang, ignoreCase = true)
+        }
+
+        val pool = if (matchingVoices.isNotEmpty()) matchingVoices else voices
+
+        fun scoreVoice(voice: Voice): Int {
+            var score = 0
+            val nameLower = voice.name.lowercase(Locale.ROOT)
+
+            // Known female voice markers in Google TTS & Android system engines
+            if (nameLower.contains("female") ||
+                nameLower.contains("woman") ||
+                nameLower.contains("fem") ||
+                nameLower.contains("hie") || // Google's primary high-definition Hindi female voice
+                nameLower.contains("cfh") ||
+                nameLower.contains("cfb") ||
+                nameLower.contains("end") || // Google's primary Indian English female voice
+                nameLower.contains("ene") ||
+                nameLower.contains("cfa") ||
+                nameLower.contains("sfg") || // Google US English female voice
+                nameLower.contains("tpd")
+            ) {
+                score += 1000
+            }
+
+            // Heavily penalize male voices
+            if (nameLower.contains("male") ||
+                nameLower.contains("man") ||
+                nameLower.contains("hid") || // Google Hindi male voice
+                nameLower.contains("him") ||
+                nameLower.contains("ena") || // Google Indian English male voice
+                nameLower.contains("enm")
+            ) {
+                score -= 2000
+            }
+
+            // Reward high quality
+            when (voice.quality) {
+                Voice.QUALITY_VERY_HIGH -> score += 300
+                Voice.QUALITY_HIGH -> score += 150
+                Voice.QUALITY_NORMAL -> score += 50
+            }
+
+            // Reward neural network articulation (natural human cadence)
+            val features = voice.features
+            if (features != null && features.contains("networkRetrievedArticulation")) {
+                score += 250
+            }
+
+            // Reward low latency
+            if (voice.latency == Voice.LATENCY_VERY_LOW) {
+                score += 60
+            }
+
+            // Country match bonus (e.g. IN for hi_IN / en_IN)
+            if (voice.locale.country.equals(targetLocale.country, ignoreCase = true)) {
+                score += 100
+            }
+
+            return score
+        }
+
+        return pool.maxByOrNull { scoreVoice(it) }
+    }
+
+    /**
+     * Speaks the provided text after pre-processing, sanitization, and phonetic normalization.
+     */
     fun speak(
         text: String,
         pitch: Float = 1.0f,
         rate: Float = 1.0f,
-        languageCode: String = "auto"
+        languageCode: String = "auto",
+        naturalVoice: Boolean = true
     ) {
-        if (!isInitialized || tts == null) {
+        val ttsInstance = tts
+        if (!isInitialized || ttsInstance == null) {
             Log.w(TAG, "TTS not initialized yet")
             return
         }
 
         stop()
 
-        val cleanText = cleanTextForSpeech(text)
-        if (cleanText.isBlank()) return
+        // 1. Sanitize text: strip markdown, raw JSON, URLs, technical API errors, code blocks, emojis
+        val cleanedText = NaturalSpeechCleaner.cleanForSpeech(text)
+        if (cleanedText.isBlank()) return
+
+        // 2. Normalization & Language resolution (Handles Hindi, English and Hinglish smoothly)
+        val (speechText, resolvedLang) = if (languageCode == "auto") {
+            HinglishSpeechNormalizer.normalizeForSpeech(cleanedText)
+        } else {
+            val hasHindi = HinglishSpeechNormalizer.containsHindiScript(cleanedText)
+            if (hasHindi && languageCode == "hi-IN") {
+                Pair(cleanedText, "hi-IN")
+            } else if (languageCode == "hi-IN") {
+                HinglishSpeechNormalizer.normalizeForSpeech(cleanedText)
+            } else {
+                Pair(cleanedText, languageCode)
+            }
+        }
 
         try {
-            tts?.setPitch(pitch.coerceIn(0.5f, 2.0f))
-            tts?.setSpeechRate(rate.coerceIn(0.5f, 2.0f))
-
-            when (languageCode) {
-                "hi-IN" -> tts?.language = Locale.forLanguageTag("hi-IN")
-                "en-IN" -> tts?.language = Locale.forLanguageTag("en-IN")
-                "en-US" -> tts?.language = Locale.US
-                else -> {
-                    val hasHindi = cleanText.any { it in '\u0900'..'\u097F' }
-                    if (hasHindi) {
-                        tts?.language = Locale.forLanguageTag("hi-IN")
-                    } else {
-                        tts?.language = Locale.forLanguageTag("en-IN")
-                    }
-                }
+            // Apply refined assistant cadence (warm natural female pitch and smooth conversational pace)
+            val effectivePitch = if (naturalVoice) {
+                (pitch * 1.04f).coerceIn(0.7f, 1.4f)
+            } else {
+                pitch.coerceIn(0.5f, 2.0f)
             }
 
-            val chunks = splitIntoChunks(cleanText, MAX_CHUNK_LENGTH)
+            val effectiveRate = if (naturalVoice) {
+                (rate * 0.98f).coerceIn(0.7f, 1.4f)
+            } else {
+                rate.coerceIn(0.5f, 2.0f)
+            }
+
+            ttsInstance.setPitch(effectivePitch)
+            ttsInstance.setSpeechRate(effectiveRate)
+
+            // Configure voice or language
+            val targetLocale = when (resolvedLang) {
+                "hi-IN" -> Locale.forLanguageTag("hi-IN")
+                "en-IN" -> Locale.forLanguageTag("en-IN")
+                "en-US" -> Locale.US
+                else -> Locale.forLanguageTag("en-IN")
+            }
+
+            setupVoiceLocale(targetLocale, naturalVoice = naturalVoice)
+
+            // Split into conversational chunks at punctuation pauses
+            val chunks = splitIntoChunks(speechText, MAX_CHUNK_LENGTH)
             if (chunks.isEmpty()) return
 
             val batchId = UUID.randomUUID().toString()
@@ -127,7 +267,7 @@ class TextToSpeechManager(
                 val params = Bundle().apply {
                     putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, chunkId)
                 }
-                tts?.speak(chunk, queueMode, params, chunkId)
+                ttsInstance.speak(chunk, queueMode, params, chunkId)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error during TTS speak", e)
@@ -140,7 +280,7 @@ class TextToSpeechManager(
         if (text.length <= maxLength) return listOf(text)
 
         val chunks = mutableListOf<String>()
-        // Split by sentences or punctuation boundaries
+        // Split by sentence and clause punctuation boundaries for natural breathing pauses
         val sentenceRegex = Regex("(?<=[.!?\\n;।])\\s+")
         val sentences = text.split(sentenceRegex).filter { it.isNotBlank() }
 
@@ -155,7 +295,6 @@ class TextToSpeechManager(
                     currentChunk = StringBuilder()
                 }
 
-                // If single sentence itself exceeds maxLength, split by commas or words
                 if (sentence.length > maxLength) {
                     val words = sentence.split(" ")
                     for (word in words) {
@@ -195,21 +334,6 @@ class TextToSpeechManager(
             _isSpeaking.value = false
             onSpeakingStateChanged(false)
         }
-    }
-
-    private fun cleanTextForSpeech(input: String): String {
-        return input
-            .replace(Regex("```[\\s\\S]*?```"), "")
-            .replace(Regex("`[^`]*`"), "")
-            .replace(Regex("\\*\\*([^*]+)\\*\\*"), "$1")
-            .replace(Regex("\\*([^*]+)\\*"), "$1")
-            .replace(Regex("_([^_]+)_"), "$1")
-            .replace(Regex("^#+\\s*", RegexOption.MULTILINE), "")
-            .replace(Regex("^[-*•]\\s*", RegexOption.MULTILINE), "")
-            .replace(Regex("https?://\\S+"), "")
-            .replace(Regex("[\\p{So}\\p{Cn}]"), "")
-            .replace(Regex("\\s+"), " ")
-            .trim()
     }
 
     fun shutdown() {

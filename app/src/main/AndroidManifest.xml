@@ -19,8 +19,14 @@
     <uses-feature android:name="android.hardware.camera.flash" android:required="false" />
 
     <queries>
+        <package android:name="com.whatsapp" />
+        <package android:name="com.google.android.youtube" />
+        <package android:name="com.android.chrome" />
         <intent>
             <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEARCH" />
         </intent>
         <intent>
             <action android:name="android.intent.action.MAIN" />

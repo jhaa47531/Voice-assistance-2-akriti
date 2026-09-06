@@ -12,6 +12,7 @@ import com.example.data.model.AssistantState
 import com.example.data.model.ChatMessage
 import com.example.data.model.IntentCommand
 import com.example.data.model.MessageRole
+import com.example.data.model.PendingAction
 import com.example.data.model.VoiceNote
 import com.example.data.repository.AssistantSettings
 import com.example.data.repository.ConversationRepository
@@ -77,6 +78,10 @@ class AkritiViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _isTorchOn = MutableStateFlow(false)
     val isTorchOn: StateFlow<Boolean> = _isTorchOn.asStateFlow()
+
+    // Pending confirmation action (WhatsApp message, Call)
+    private val _pendingAction = MutableStateFlow<PendingAction?>(null)
+    val pendingAction: StateFlow<PendingAction?> = _pendingAction.asStateFlow()
 
     // Continuous hands-free conversation control
     private var shouldContinueHandsFree: Boolean = false
@@ -235,6 +240,21 @@ class AkritiViewModel(application: Application) : AndroidViewModel(application) 
         sttManager.stopListening()
         ttsManager.stop()
 
+        // Check if there is an active pending confirmation action
+        val currentPending = _pendingAction.value
+        if (currentPending != null) {
+            if (intentRouter.isAffirmativeResponse(userPrompt)) {
+                confirmPendingAction()
+                return
+            } else if (intentRouter.isNegativeResponse(userPrompt)) {
+                cancelPendingAction()
+                return
+            } else {
+                // User gave another command or changed intent, dismiss previous pending action
+                _pendingAction.value = null
+            }
+        }
+
         // 1. Add User message to conversation history
         val userMsg = ChatMessage(
             role = MessageRole.USER,
@@ -301,6 +321,10 @@ class AkritiViewModel(application: Application) : AndroidViewModel(application) 
                 // Dispatch safe Android action if detected
                 if (resolvedIntent.action != ActionType.NONE) {
                     when (val actionResult = actionHandler.handleAction(resolvedIntent)) {
+                        is ActionResult.RequiresConfirmation -> {
+                            _pendingAction.value = actionResult.pendingAction
+                            finalReply = actionResult.prompt
+                        }
                         is ActionResult.ExecutedWithInfo -> finalReply = actionResult.info
                         is ActionResult.Handled -> finalReply = actionResult.message
                         is ActionResult.Failed -> finalReply = "${aiResult.reply} (${actionResult.error})"
@@ -332,7 +356,8 @@ class AkritiViewModel(application: Application) : AndroidViewModel(application) 
                         text = finalReply,
                         pitch = currentSettings.speechPitch,
                         rate = currentSettings.speechRate,
-                        languageCode = currentSettings.languageCode
+                        languageCode = currentSettings.languageCode,
+                        naturalVoice = currentSettings.naturalVoiceEnabled
                     )
                 } else {
                     _assistantState.value = AssistantState.IDLE
@@ -365,6 +390,10 @@ class AkritiViewModel(application: Application) : AndroidViewModel(application) 
         refreshDeviceStatus()
 
         val replyText = when (actionResult) {
+            is ActionResult.RequiresConfirmation -> {
+                _pendingAction.value = actionResult.pendingAction
+                actionResult.prompt
+            }
             is ActionResult.ExecutedWithInfo -> actionResult.info
             is ActionResult.Handled -> actionResult.message
             is ActionResult.Failed -> "Command execute nahi ho saka: ${actionResult.error}"
@@ -385,8 +414,56 @@ class AkritiViewModel(application: Application) : AndroidViewModel(application) 
                 text = replyText,
                 pitch = settings.value.speechPitch,
                 rate = settings.value.speechRate,
-                languageCode = settings.value.languageCode
+                languageCode = settings.value.languageCode,
+                naturalVoice = settings.value.naturalVoiceEnabled
             )
+        } else {
+            _assistantState.value = AssistantState.IDLE
+            _statusText.value = "Tap to speak to Akriti"
+        }
+    }
+
+    fun confirmPendingAction() {
+        val pending = _pendingAction.value ?: return
+        _pendingAction.value = null
+
+        val result = when (pending) {
+            is PendingAction.SendWhatsAppMessage -> actionHandler.executeConfirmedWhatsApp(pending)
+            is PendingAction.MakePhoneCall -> actionHandler.executeConfirmedCall(pending)
+        }
+
+        val replyText = when (result) {
+            is ActionResult.Handled -> result.message
+            is ActionResult.ExecutedWithInfo -> result.info
+            is ActionResult.Failed -> "Action execute nahi ho saka: ${result.error}"
+            else -> "Action execute kar diya hai."
+        }
+
+        val assistantMsg = ChatMessage(
+            role = MessageRole.ASSISTANT,
+            text = replyText
+        )
+        conversationRepository.addMessage(assistantMsg)
+
+        if (settings.value.autoSpeak) {
+            speakMessage(replyText)
+        } else {
+            _assistantState.value = AssistantState.IDLE
+            _statusText.value = "Tap to speak to Akriti"
+        }
+    }
+
+    fun cancelPendingAction() {
+        _pendingAction.value = null
+        val replyText = "Action radd kar diya gaya hai."
+        val assistantMsg = ChatMessage(
+            role = MessageRole.ASSISTANT,
+            text = replyText
+        )
+        conversationRepository.addMessage(assistantMsg)
+
+        if (settings.value.autoSpeak) {
+            speakMessage(replyText)
         } else {
             _assistantState.value = AssistantState.IDLE
             _statusText.value = "Tap to speak to Akriti"
@@ -401,12 +478,20 @@ class AkritiViewModel(application: Application) : AndroidViewModel(application) 
             text = text,
             pitch = currentSettings.speechPitch,
             rate = currentSettings.speechRate,
-            languageCode = currentSettings.languageCode
+            languageCode = currentSettings.languageCode,
+            naturalVoice = currentSettings.naturalVoiceEnabled
         )
     }
 
     fun executeIntentDirectly(intent: IntentCommand) {
         when (val result = actionHandler.handleAction(intent)) {
+            is ActionResult.RequiresConfirmation -> {
+                _pendingAction.value = result.pendingAction
+                _statusText.value = result.prompt
+                if (settings.value.autoSpeak) {
+                    speakMessage(result.prompt)
+                }
+            }
             is ActionResult.Handled -> _statusText.value = result.message
             is ActionResult.ExecutedWithInfo -> {
                 _statusText.value = result.info

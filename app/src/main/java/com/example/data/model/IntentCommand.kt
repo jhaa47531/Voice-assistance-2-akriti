@@ -17,7 +17,12 @@ enum class ActionType {
     SEND_MESSAGE,
     DIAL_PHONE,
     TOGGLE_FLASHLIGHT,
-    SHARE_CONTENT
+    SHARE_CONTENT,
+    WHATSAPP_OPEN,
+    WHATSAPP_MESSAGE,
+    YOUTUBE_OPEN,
+    YOUTUBE_SEARCH,
+    CALL_PHONE
 }
 
 data class IntentCommand(

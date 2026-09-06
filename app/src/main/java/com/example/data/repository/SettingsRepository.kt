@@ -20,6 +20,7 @@ data class AssistantSettings(
     val instantLocalExecution: Boolean = true,
     val autoFallback: Boolean = true,
     val alwaysListeningMode: Boolean = false,
+    val naturalVoiceEnabled: Boolean = true,
     val geminiApiKey: String = "",
     val groqApiKey: String = "",
     val openRouterApiKey: String = "",
@@ -65,6 +66,7 @@ class SettingsRepository(context: Context) {
             instantLocalExecution = prefs.getBoolean("instantLocalExecution", true),
             autoFallback = prefs.getBoolean("autoFallback", true),
             alwaysListeningMode = prefs.getBoolean("alwaysListeningMode", false),
+            naturalVoiceEnabled = prefs.getBoolean("naturalVoiceEnabled", true),
             geminiApiKey = savedGeminiKey,
             groqApiKey = prefs.getString("groqApiKey", "") ?: "",
             openRouterApiKey = prefs.getString("openRouterApiKey", "") ?: "",
@@ -86,6 +88,7 @@ class SettingsRepository(context: Context) {
             putBoolean("instantLocalExecution", sanitizedSettings.instantLocalExecution)
             putBoolean("autoFallback", sanitizedSettings.autoFallback)
             putBoolean("alwaysListeningMode", sanitizedSettings.alwaysListeningMode)
+            putBoolean("naturalVoiceEnabled", sanitizedSettings.naturalVoiceEnabled)
             putString("geminiApiKey", sanitizedSettings.geminiApiKey)
             putString("groqApiKey", sanitizedSettings.groqApiKey)
             putString("openRouterApiKey", sanitizedSettings.openRouterApiKey)

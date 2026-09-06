@@ -16,6 +16,7 @@ import android.provider.Settings
 import androidx.core.content.ContextCompat
 import com.example.data.model.ActionType
 import com.example.data.model.IntentCommand
+import com.example.data.model.PendingAction
 import com.example.data.repository.VoiceNotesRepository
 import com.example.voice.VoiceRecognitionCorrector
 import java.text.SimpleDateFormat
@@ -28,6 +29,10 @@ sealed class ActionResult {
     data class Handled(val message: String) : ActionResult()
     data class ExecutedWithInfo(val info: String) : ActionResult()
     data class Failed(val error: String) : ActionResult()
+    data class RequiresConfirmation(
+        val prompt: String,
+        val pendingAction: PendingAction
+    ) : ActionResult()
     object Ignored : ActionResult()
 }
 
@@ -55,6 +60,11 @@ class AndroidActionHandler(
      */
     fun handleAction(intent: IntentCommand): ActionResult {
         return when (intent.action) {
+            ActionType.WHATSAPP_OPEN -> openWhatsApp()
+            ActionType.WHATSAPP_MESSAGE -> prepareWhatsAppMessage(intent)
+            ActionType.YOUTUBE_OPEN -> openYouTube()
+            ActionType.YOUTUBE_SEARCH -> searchYouTube(intent.target ?: intent.rawQuery)
+            ActionType.CALL_PHONE -> preparePhoneCall(intent.target)
             ActionType.BATTERY_INFO -> getBatteryInfo()
             ActionType.DATE_TIME -> getDateTimeInfo()
             ActionType.DEVICE_INFO -> getDeviceInfo()
@@ -75,6 +85,225 @@ class AndroidActionHandler(
         }
     }
 
+    // --- WhatsApp Integration ---
+    fun openWhatsApp(): ActionResult {
+        return try {
+            val pm = context.packageManager
+            val launchIntent = pm.getLaunchIntentForPackage("com.whatsapp")
+            if (launchIntent != null) {
+                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(launchIntent)
+                ActionResult.Handled("WhatsApp open kar diya hai.")
+            } else {
+                ActionResult.Failed("Aapke phone mein WhatsApp install nahi hai.")
+            }
+        } catch (e: Exception) {
+            ActionResult.Failed("WhatsApp open karne mein dikkat aayi: ${e.localizedMessage}")
+        }
+    }
+
+    private fun prepareWhatsAppMessage(intent: IntentCommand): ActionResult {
+        val recipient = intent.parameters["recipient"] ?: intent.target
+        val message = intent.parameters["message"]
+
+        if (recipient.isNullOrBlank()) {
+            return ActionResult.Failed("WhatsApp par kise message bhejna hai, kripya batayein.")
+        }
+
+        if (message.isNullOrBlank()) {
+            return ActionResult.Failed("$recipient ko WhatsApp par kya message bhejna hai, kripya batayein.")
+        }
+
+        val digitsCount = recipient.count { it.isDigit() }
+        val hasLetters = recipient.any { it.isLetter() }
+
+        if (!hasLetters && digitsCount >= 7) {
+            return ActionResult.RequiresConfirmation(
+                prompt = "$recipient ko WhatsApp par '$message' bhejna hai. Kya main send karoon?",
+                pendingAction = PendingAction.SendWhatsAppMessage(
+                    contactName = recipient,
+                    phoneNumber = recipient,
+                    messageText = message
+                )
+            )
+        }
+
+        val matches = findContactsByName(recipient)
+        return when {
+            matches.isEmpty() -> {
+                ActionResult.Failed("Mujhe '$recipient' naam ka koi contact nahi mila. Kripya phone number ya sahi naam batayein.")
+            }
+            matches.size > 1 -> {
+                val list = matches.take(3).joinToString(", ") { "${it.name} (${it.number})" }
+                ActionResult.Handled("Mujhe '$recipient' ke liye multiple contacts mile: $list. Kise WhatsApp message bhejna hai?")
+            }
+            else -> {
+                val match = matches.first()
+                ActionResult.RequiresConfirmation(
+                    prompt = "${match.name} (${match.number}) ko WhatsApp par '$message' bhejna hai. Kya main send karoon?",
+                    pendingAction = PendingAction.SendWhatsAppMessage(
+                        contactName = match.name,
+                        phoneNumber = match.number,
+                        messageText = message
+                    )
+                )
+            }
+        }
+    }
+
+    fun executeConfirmedWhatsApp(pending: PendingAction.SendWhatsAppMessage): ActionResult {
+        return try {
+            val rawNumber = pending.phoneNumber.filter { it.isDigit() || it == '+' }
+            val cleanedNumber = if (!rawNumber.startsWith("+") && rawNumber.length == 10) {
+                "91$rawNumber"
+            } else {
+                rawNumber.removePrefix("+")
+            }
+
+            val encodedMessage = Uri.encode(pending.messageText)
+            val uri = Uri.parse("https://api.whatsapp.com/send?phone=$cleanedNumber&text=$encodedMessage")
+
+            val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+                setPackage("com.whatsapp")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+
+            val pm = context.packageManager
+            if (intent.resolveActivity(pm) != null) {
+                context.startActivity(intent)
+                ActionResult.Handled("${pending.contactName} ko WhatsApp message bhejne ke liye chat open kar di hai.")
+            } else {
+                val fallbackIntent = Intent(Intent.ACTION_VIEW, uri).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(fallbackIntent)
+                ActionResult.Handled("${pending.contactName} ke liye WhatsApp link open kar diya hai.")
+            }
+        } catch (e: Exception) {
+            ActionResult.Failed("WhatsApp message bhejne mein dikkat aayi: ${e.localizedMessage}")
+        }
+    }
+
+    // --- YouTube Integration ---
+    fun openYouTube(): ActionResult {
+        return try {
+            val pm = context.packageManager
+            val launchIntent = pm.getLaunchIntentForPackage("com.google.android.youtube")
+            if (launchIntent != null) {
+                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(launchIntent)
+                ActionResult.Handled("YouTube open kar diya hai.")
+            } else {
+                val webIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com")).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(webIntent)
+                ActionResult.Handled("YouTube browser mein open ho raha hai.")
+            }
+        } catch (e: Exception) {
+            ActionResult.Failed("YouTube open karne mein dikkat aayi: ${e.localizedMessage}")
+        }
+    }
+
+    fun searchYouTube(query: String?): ActionResult {
+        val q = query?.trim().orEmpty()
+        if (q.isBlank()) return openYouTube()
+
+        return try {
+            val pm = context.packageManager
+            val ytIntent = Intent(Intent.ACTION_SEARCH).apply {
+                setPackage("com.google.android.youtube")
+                putExtra("query", q)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            if (ytIntent.resolveActivity(pm) != null) {
+                context.startActivity(ytIntent)
+                ActionResult.Handled("YouTube par '$q' search kar diya hai.")
+            } else {
+                val webUri = Uri.parse("https://www.youtube.com/results?search_query=${Uri.encode(q)}")
+                val webIntent = Intent(Intent.ACTION_VIEW, webUri).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(webIntent)
+                ActionResult.Handled("YouTube par '$q' search kiya ja raha hai.")
+            }
+        } catch (e: Exception) {
+            ActionResult.Failed("YouTube search karne mein dikkat aayi.")
+        }
+    }
+
+    // --- Phone Calling ---
+    private fun preparePhoneCall(target: String?): ActionResult {
+        val cleaned = target?.trim().orEmpty()
+        if (cleaned.isBlank()) {
+            val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:")).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(dialIntent)
+            return ActionResult.Handled("Phone dialer open kar diya hai.")
+        }
+
+        val digitsCount = cleaned.count { it.isDigit() }
+        val hasLetters = cleaned.any { it.isLetter() }
+
+        if (!hasLetters && digitsCount >= 3) {
+            return ActionResult.RequiresConfirmation(
+                prompt = "$cleaned ko call lagayein?",
+                pendingAction = PendingAction.MakePhoneCall(
+                    contactName = cleaned,
+                    phoneNumber = cleaned
+                )
+            )
+        }
+
+        val matches = findContactsByName(cleaned)
+        return when {
+            matches.isEmpty() -> {
+                ActionResult.Handled("Mujhe '$cleaned' naam ka koi contact nahi mila.")
+            }
+            matches.size > 1 -> {
+                val list = matches.take(3).joinToString(", ") { "${it.name} (${it.number})" }
+                ActionResult.Handled("Mujhe '$cleaned' ke liye multiple contacts mile: $list. Kise call karoon?")
+            }
+            else -> {
+                val match = matches.first()
+                ActionResult.RequiresConfirmation(
+                    prompt = "${match.name} (${match.number}) ko call lagayein?",
+                    pendingAction = PendingAction.MakePhoneCall(
+                        contactName = match.name,
+                        phoneNumber = match.number
+                    )
+                )
+            }
+        }
+    }
+
+    fun executeConfirmedCall(pending: PendingAction.MakePhoneCall): ActionResult {
+        val hasCallPermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CALL_PHONE
+        ) == PackageManager.PERMISSION_GRANTED
+
+        return try {
+            if (hasCallPermission) {
+                val callIntent = Intent(Intent.ACTION_CALL, Uri.parse("tel:${pending.phoneNumber}")).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(callIntent)
+                ActionResult.Handled("${pending.contactName} ko call lagayi ja rahi hai.")
+            } else {
+                val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${pending.phoneNumber}")).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(dialIntent)
+                ActionResult.Handled("${pending.contactName} ka number (${pending.phoneNumber}) dialer mein open kar diya hai.")
+            }
+        } catch (e: Exception) {
+            ActionResult.Failed("Call lagane mein dikkat aayi: ${e.localizedMessage}")
+        }
+    }
+
+    // --- Voice Notes ---
     private fun saveVoiceNote(rawNote: String?): ActionResult {
         val content = rawNote?.trim().orEmpty()
         if (content.isBlank()) {
@@ -90,6 +319,7 @@ class AndroidActionHandler(
         return ActionResult.ExecutedWithInfo("Aapke saved notes screen par dikha rahi hoon.")
     }
 
+    // --- Battery & Device Info ---
     private fun getBatteryInfo(): ActionResult {
         return try {
             val bm = context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
@@ -124,6 +354,7 @@ class AndroidActionHandler(
         return ActionResult.ExecutedWithInfo("Yeh $manufacturer $model hai, jo Android $androidVer (API $sdkVer) par chal raha hai.")
     }
 
+    // --- App Launching ---
     private fun openApplication(targetApp: String?): ActionResult {
         if (targetApp.isNullOrBlank()) {
             return ActionResult.Failed("Kaun si app kholni hai, kripya batayein.")
@@ -131,28 +362,38 @@ class AndroidActionHandler(
 
         val name = targetApp.lowercase(Locale.ROOT).trim()
 
-        // Known common Android app package mappings
         val knownPackages = mapOf(
             "youtube" to "com.google.android.youtube",
+            "yt" to "com.google.android.youtube",
             "whatsapp" to "com.whatsapp",
+            "wa" to "com.whatsapp",
             "camera" to "camera_intent",
+            "photo" to "camera_intent",
             "chrome" to "com.android.chrome",
             "browser" to "com.android.chrome",
             "maps" to "com.google.android.apps.maps",
             "google maps" to "com.google.android.apps.maps",
             "spotify" to "com.spotify.music",
+            "music" to "com.spotify.music",
+            "gana" to "com.spotify.music",
             "gmail" to "com.google.android.gm",
             "mail" to "com.google.android.gm",
             "calculator" to "com.google.android.calculator",
+            "calc" to "com.google.android.calculator",
+            "hisab" to "com.google.android.calculator",
             "clock" to "com.google.android.deskclock",
+            "ghadi" to "com.google.android.deskclock",
             "calendar" to "com.google.android.calendar",
             "instagram" to "com.instagram.android",
+            "insta" to "com.instagram.android",
             "telegram" to "org.telegram.messenger",
             "photos" to "com.google.android.apps.photos",
             "gallery" to "com.google.android.apps.photos",
             "contacts" to "com.google.android.contacts",
+            "phonebook" to "com.google.android.contacts",
             "files" to "com.google.android.documentsui",
-            "settings" to "settings_intent"
+            "settings" to "settings_intent",
+            "setting" to "settings_intent"
         )
 
         try {
@@ -170,7 +411,6 @@ class AndroidActionHandler(
                 return openSettings("main")
             }
 
-            // Check known package
             val pkg = knownPackages[name]
             if (pkg != null) {
                 val launchIntent = pm.getLaunchIntentForPackage(pkg)
@@ -181,7 +421,6 @@ class AndroidActionHandler(
                 }
             }
 
-            // Search installed apps matching target label or package
             val installedApps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
             for (appInfo in installedApps) {
                 val appLabel = pm.getApplicationLabel(appInfo).toString().lowercase(Locale.ROOT)
@@ -196,7 +435,6 @@ class AndroidActionHandler(
                 }
             }
 
-            // If not found installed, provide Play Store link
             val marketUri = Uri.parse("market://search?q=${Uri.encode(targetApp)}")
             val marketIntent = Intent(Intent.ACTION_VIEW, marketUri).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -212,6 +450,7 @@ class AndroidActionHandler(
         }
     }
 
+    // --- Android Settings ---
     private fun openSettings(target: String?): ActionResult {
         return try {
             val action = when (target?.lowercase(Locale.ROOT)?.trim()) {
@@ -236,6 +475,7 @@ class AndroidActionHandler(
         }
     }
 
+    // --- Web Search & URLs ---
     private fun launchUrl(rawUrl: String?): ActionResult {
         if (rawUrl.isNullOrBlank()) {
             return ActionResult.Failed("URL nahi mila.")
@@ -270,6 +510,7 @@ class AndroidActionHandler(
         }
     }
 
+    // --- Alarm & Timer ---
     private fun setTimer(target: String?, params: Map<String, String>): ActionResult {
         return try {
             val secondsFromParam = params["seconds"]?.toIntOrNull()
@@ -285,7 +526,7 @@ class AndroidActionHandler(
             context.startActivity(intent)
             ActionResult.Handled("$totalSeconds seconds ka timer set kar diya hai.")
         } catch (e: Exception) {
-            ActionResult.Failed("Timer set karne ke liye alarm/clock app nahi mili.")
+            ActionResult.Failed("Timer set karne ke liye clock app nahi mili.")
         }
     }
 
@@ -294,7 +535,6 @@ class AndroidActionHandler(
             var hour = params["hour"]?.toIntOrNull()
             var minute = params["minute"]?.toIntOrNull() ?: 0
 
-            // If not in params, parse from target (e.g. "07:30", "7", "19:45")
             if (hour == null && !target.isNullOrBlank()) {
                 val timeParts = target.split(":")
                 if (timeParts.size >= 2) {
@@ -309,16 +549,18 @@ class AndroidActionHandler(
                 }
             }
 
-            val finalHour = hour ?: 7
+            val finalHour = (hour ?: 7).coerceIn(0, 23)
+            val finalMinute = minute.coerceIn(0, 59)
+
             val intent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
                 putExtra(AlarmClock.EXTRA_MESSAGE, "Akriti Alarm")
                 putExtra(AlarmClock.EXTRA_HOUR, finalHour)
-                putExtra(AlarmClock.EXTRA_MINUTES, minute)
+                putExtra(AlarmClock.EXTRA_MINUTES, finalMinute)
                 putExtra(AlarmClock.EXTRA_SKIP_UI, false)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
-            ActionResult.Handled("$finalHour:${String.format("%02d", minute)} ka alarm set kar diya hai.")
+            ActionResult.Handled("$finalHour:${String.format("%02d", finalMinute)} ka alarm set kar diya hai.")
         } catch (e: Exception) {
             ActionResult.Failed("Alarm set nahi ho saka.")
         }
@@ -340,6 +582,7 @@ class AndroidActionHandler(
         }
     }
 
+    // --- Dialer & Contacts ---
     private fun dialPhone(phoneNumber: String?): ActionResult {
         return try {
             val cleaned = phoneNumber?.trim().orEmpty()
@@ -351,69 +594,35 @@ class AndroidActionHandler(
                 return ActionResult.Handled("Phone dialer open kar diya hai.")
             }
 
-            // Check if it's purely digits or phone format (+, -, digits)
             val digitsCount = cleaned.count { it.isDigit() }
             val hasLetters = cleaned.any { it.isLetter() }
 
             if (!hasLetters && digitsCount > 0) {
-                // Pure phone number
-                return initiateCallOrDial(cleaned, cleaned)
-            }
-
-            // Otherwise, target is a contact name
-            val hasReadContacts = ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.READ_CONTACTS
-            ) == PackageManager.PERMISSION_GRANTED
-
-            if (!hasReadContacts) {
-                val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:")).apply {
+                val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$cleaned")).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
-                context.startActivity(intent)
-                return ActionResult.Handled("Contacts access karne ke liye permission enable kijiye. Dialer open kar diya hai.")
+                context.startActivity(dialIntent)
+                return ActionResult.Handled("$cleaned dialer mein open kar diya hai.")
             }
 
-            val matchingContacts = findContactsByName(cleaned)
-
+            val matches = findContactsByName(cleaned)
             when {
-                matchingContacts.isEmpty() -> {
-                    ActionResult.Handled("Mujhe '$cleaned' naam ka koi contact nahi mila.")
-                }
-                matchingContacts.size > 1 -> {
-                    val namesList = matchingContacts.take(3).joinToString(", ") { "${it.name} (${it.number})" }
-                    ActionResult.Handled("Mujhe '$cleaned' ke liye multiple contacts mile: $namesList. Kise call karoon?")
+                matches.isEmpty() -> ActionResult.Handled("Mujhe '$cleaned' naam ka koi contact nahi mila.")
+                matches.size > 1 -> {
+                    val list = matches.take(3).joinToString(", ") { "${it.name} (${it.number})" }
+                    ActionResult.Handled("Mujhe '$cleaned' ke liye multiple contacts mile: $list. Kise call karoon?")
                 }
                 else -> {
-                    val match = matchingContacts.first()
-                    initiateCallOrDial(match.number, match.name)
+                    val match = matches.first()
+                    val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${match.number}")).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(dialIntent)
+                    ActionResult.Handled("${match.name} ka number (${match.number}) dialer mein open kar diya hai.")
                 }
             }
         } catch (e: Exception) {
-            ActionResult.Failed("Call lagane mein dikkat aayi: ${e.message}")
-        }
-    }
-
-    private fun initiateCallOrDial(phoneNumber: String, contactDisplayName: String): ActionResult {
-        val hasCallPermission = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.CALL_PHONE
-        ) == PackageManager.PERMISSION_GRANTED
-
-        return if (hasCallPermission) {
-            // Direct call without stopping at dialer
-            val callIntent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$phoneNumber")).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivity(callIntent)
-            ActionResult.Handled("$contactDisplayName ko direct call lagayi ja rahi hai.")
-        } else {
-            // Graceful fallback to dialer with prefilled number
-            val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$phoneNumber")).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivity(dialIntent)
-            ActionResult.Handled("$contactDisplayName ka number ($phoneNumber) dialer mein open kar diya hai.")
+            ActionResult.Failed("Dialer open karne mein dikkat aayi: ${e.message}")
         }
     }
 
@@ -450,7 +659,6 @@ class AndroidActionHandler(
                 }
             }
 
-            // If no exact substring matches were found, safely check for phonetically close or homophone contacts (e.g. "aunt" -> "ansh")
             if (results.isEmpty()) {
                 val allContacts = getAllDeviceContacts()
                 val fuzzyMatchedName = VoiceRecognitionCorrector.findFuzzyContactMatch(nameQuery, allContacts.map { it.name })
@@ -459,9 +667,7 @@ class AndroidActionHandler(
                     results.addAll(matchedContacts)
                 }
             }
-        } catch (e: Exception) {
-            // Return whatever matches were found
-        }
+        } catch (_: Exception) {}
         return results
     }
 
@@ -503,7 +709,6 @@ class AndroidActionHandler(
             var targetNumber = recipient.orEmpty().trim()
             var displayName = recipient
 
-            // If recipient has letters, attempt to look up their contact phone number
             if (targetNumber.any { it.isLetter() }) {
                 val matches = findContactsByName(targetNumber)
                 if (matches.isNotEmpty()) {
@@ -531,9 +736,7 @@ class AndroidActionHandler(
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
-                if (cameraManager == null) {
-                    return ActionResult.Failed("Camera service uplabdh nahi hai.")
-                }
+                    ?: return ActionResult.Failed("Camera service uplabdh nahi hai.")
 
                 val cameraIdList = cameraManager.cameraIdList
                 var rearCameraId: String? = null
@@ -548,9 +751,7 @@ class AndroidActionHandler(
                 }
 
                 val targetId = rearCameraId ?: cameraIdList.firstOrNull()
-                if (targetId == null) {
-                    return ActionResult.Failed("Phone mein flashlight nahi mili.")
-                }
+                    ?: return ActionResult.Failed("Phone mein flashlight nahi mili.")
 
                 val turnOn = when (state?.lowercase(Locale.ROOT)) {
                     "on" -> true

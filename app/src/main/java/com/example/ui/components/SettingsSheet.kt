@@ -105,6 +105,7 @@ fun SettingsSheet(
     var autoSpeak by remember { mutableStateOf(currentSettings.autoSpeak) }
     var continuousConversation by remember { mutableStateOf(currentSettings.continuousConversation) }
     var instantLocalExecution by remember { mutableStateOf(currentSettings.instantLocalExecution) }
+    var naturalVoiceEnabled by remember { mutableStateOf(currentSettings.naturalVoiceEnabled) }
 
     // Ensure model matches selected provider
     val providerModels = com.example.data.model.AiModels.getModelsForProvider(selectedProvider)
@@ -596,6 +597,33 @@ fun SettingsSheet(
                 )
             }
 
+            // Natural Neural Female Voice toggle
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Natural Human Voice (Neural)",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Akriti female cadence & fluent Hindi, English and Hinglish",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = naturalVoiceEnabled,
+                    onCheckedChange = { naturalVoiceEnabled = it }
+                )
+            }
+
             // Continuous Conversation (Hands-Free) toggle
             Row(
                 modifier = Modifier
@@ -692,6 +720,7 @@ fun SettingsSheet(
                             speechRate = speechRate,
                             speechPitch = speechPitch,
                             autoSpeak = autoSpeak,
+                            naturalVoiceEnabled = naturalVoiceEnabled,
                             continuousConversation = continuousConversation,
                             instantLocalExecution = instantLocalExecution
                         )
