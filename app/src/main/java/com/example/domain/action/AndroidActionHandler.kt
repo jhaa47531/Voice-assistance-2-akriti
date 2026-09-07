@@ -39,7 +39,8 @@ sealed class ActionResult {
 class AndroidActionHandler(
     private val context: Context,
     private val notesRepository: VoiceNotesRepository? = null,
-    private val onShowNotes: (() -> Unit)? = null
+    private val onShowNotes: (() -> Unit)? = null,
+    private val onShowScreenTime: (() -> Unit)? = null
 ) {
 
     private val alarmScheduler = AkritiAlarmScheduler(context)
@@ -84,7 +85,19 @@ class AndroidActionHandler(
             ActionType.SEND_MESSAGE -> sendMessage(intent.target, intent.rawQuery)
             ActionType.TOGGLE_FLASHLIGHT -> toggleFlashlight(intent.target)
             ActionType.SHARE_CONTENT -> shareContent(intent.target ?: intent.rawQuery)
+            ActionType.SCREEN_TIME -> showScreenTime()
             ActionType.NONE -> ActionResult.Ignored
+        }
+    }
+
+    private fun showScreenTime(): ActionResult {
+        onShowScreenTime?.invoke()
+        val manager = com.example.domain.screentime.ScreenTimeManager(context)
+        val summary = manager.getScreenTimeSummary()
+        return if (summary.hasPermission) {
+            ActionResult.Handled("Aaj ka total screen time ${summary.formattedToday} hai.")
+        } else {
+            ActionResult.Handled("Screen time dekhne ke liye Usage Access permission chahiye.")
         }
     }
 

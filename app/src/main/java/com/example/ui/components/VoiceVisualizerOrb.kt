@@ -98,8 +98,8 @@ fun VoiceVisualizerOrb(
     val coreColor by animateColorAsState(
         targetValue = when (state) {
             AssistantState.IDLE -> AkritiIndigoPrimary
-            AssistantState.LISTENING -> AkritiCyanListening
-            AssistantState.PROCESSING -> AkritiIndigoVariant
+            AssistantState.LISTENING, AssistantState.LISTENING_FOR_COMMAND, AssistantState.LISTENING_FOR_WAKE_WORD, AssistantState.WAKE_DETECTED -> AkritiCyanListening
+            AssistantState.PROCESSING, AssistantState.EXECUTING -> AkritiIndigoVariant
             AssistantState.SPEAKING -> AkritiEmeraldSpeaking
             AssistantState.ERROR -> AkritiRoseError
         },
@@ -110,8 +110,8 @@ fun VoiceVisualizerOrb(
     val glowColor by animateColorAsState(
         targetValue = when (state) {
             AssistantState.IDLE -> AkritiIndigoPrimary.copy(alpha = 0.25f)
-            AssistantState.LISTENING -> AkritiCyanGlow
-            AssistantState.PROCESSING -> AkritiIndigoPrimary.copy(alpha = 0.35f)
+            AssistantState.LISTENING, AssistantState.LISTENING_FOR_COMMAND, AssistantState.LISTENING_FOR_WAKE_WORD, AssistantState.WAKE_DETECTED -> AkritiCyanGlow
+            AssistantState.PROCESSING, AssistantState.EXECUTING -> AkritiIndigoPrimary.copy(alpha = 0.35f)
             AssistantState.SPEAKING -> AkritiEmeraldGlow
             AssistantState.ERROR -> AkritiRoseGlow
         },
@@ -120,7 +120,7 @@ fun VoiceVisualizerOrb(
     )
 
     // Dynamic scale driven by microphone RMS dB when listening
-    val micDynamicScale = if (state == AssistantState.LISTENING) {
+    val micDynamicScale = if (state.isListening) {
         1.0f + (rmsDb * 0.45f)
     } else {
         1.0f
@@ -131,7 +131,7 @@ fun VoiceVisualizerOrb(
         contentAlignment = Alignment.Center
     ) {
         // Outer pulsing ring 2 (Active when listening or speaking)
-        if (state == AssistantState.LISTENING || state == AssistantState.SPEAKING) {
+        if (state.isListening || state == AssistantState.SPEAKING) {
             Box(
                 modifier = Modifier
                     .size(90.dp)
@@ -147,10 +147,10 @@ fun VoiceVisualizerOrb(
                 modifier = Modifier
                     .size(90.dp)
                     .scale(
-                        when (state) {
-                            AssistantState.LISTENING -> waveRing1 * micDynamicScale
-                            AssistantState.SPEAKING -> waveRing1
-                            AssistantState.PROCESSING -> rotateProcessing * 1.2f
+                        when {
+                            state.isListening -> waveRing1 * micDynamicScale
+                            state == AssistantState.SPEAKING -> waveRing1
+                            state == AssistantState.PROCESSING || state == AssistantState.EXECUTING -> rotateProcessing * 1.2f
                             else -> ambientScale * 1.15f
                         }
                     )
@@ -160,12 +160,12 @@ fun VoiceVisualizerOrb(
         }
 
         // Core interactive Orb Button
-        val coreScale = when (state) {
-            AssistantState.IDLE -> ambientScale
-            AssistantState.LISTENING -> micDynamicScale
-            AssistantState.PROCESSING -> rotateProcessing
-            AssistantState.SPEAKING -> ambientScale * 1.05f
-            AssistantState.ERROR -> 1.0f
+        val coreScale = when {
+            state == AssistantState.IDLE -> ambientScale
+            state.isListening -> micDynamicScale
+            state == AssistantState.PROCESSING || state == AssistantState.EXECUTING -> rotateProcessing
+            state == AssistantState.SPEAKING -> ambientScale * 1.05f
+            else -> 1.0f
         }
 
         Box(
@@ -188,8 +188,8 @@ fun VoiceVisualizerOrb(
                 ),
             contentAlignment = Alignment.Center
         ) {
-            when (state) {
-                AssistantState.IDLE -> {
+            when {
+                state == AssistantState.IDLE -> {
                     Icon(
                         imageVector = Icons.Default.Mic,
                         contentDescription = "Tap to speak",
@@ -197,7 +197,7 @@ fun VoiceVisualizerOrb(
                         modifier = Modifier.size(36.dp)
                     )
                 }
-                AssistantState.LISTENING -> {
+                state.isListening || state == AssistantState.WAKE_DETECTED -> {
                     Icon(
                         imageVector = Icons.Default.GraphicEq,
                         contentDescription = "Listening",
@@ -205,7 +205,7 @@ fun VoiceVisualizerOrb(
                         modifier = Modifier.size(38.dp)
                     )
                 }
-                AssistantState.PROCESSING -> {
+                state == AssistantState.PROCESSING || state == AssistantState.EXECUTING -> {
                     Icon(
                         imageVector = Icons.Default.GraphicEq,
                         contentDescription = "Thinking",
@@ -213,7 +213,7 @@ fun VoiceVisualizerOrb(
                         modifier = Modifier.size(36.dp)
                     )
                 }
-                AssistantState.SPEAKING -> {
+                state == AssistantState.SPEAKING -> {
                     Icon(
                         imageVector = Icons.Default.Stop,
                         contentDescription = "Stop speaking",
@@ -221,7 +221,7 @@ fun VoiceVisualizerOrb(
                         modifier = Modifier.size(36.dp)
                     )
                 }
-                AssistantState.ERROR -> {
+                else -> {
                     Icon(
                         imageVector = Icons.Default.MicOff,
                         contentDescription = "Error, tap to retry",

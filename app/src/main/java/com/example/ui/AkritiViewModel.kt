@@ -36,17 +36,28 @@ class AkritiViewModel(application: Application) : AndroidViewModel(application) 
     private val conversationRepository = ConversationRepository(application)
     val settingsRepository = SettingsRepository(application)
     private val voiceNotesRepository = VoiceNotesRepository(application)
+    val commandHistoryRepository = com.example.data.repository.CommandHistoryRepository(application)
+    val screenTimeManager = com.example.domain.screentime.ScreenTimeManager(application)
+    val contextHolder = com.example.domain.context.ConversationContextHolder()
     private val aiOrchestrator = AiProviderOrchestrator()
     private val intentRouter = IntentRouter()
 
     private val _showNotesSheet = MutableStateFlow(false)
     val showNotesSheet: StateFlow<Boolean> = _showNotesSheet.asStateFlow()
 
+    private val _screenTimeSummary = MutableStateFlow(screenTimeManager.getScreenTimeSummary())
+    val screenTimeSummary: StateFlow<com.example.data.model.ScreenTimeSummary> = _screenTimeSummary.asStateFlow()
+
+    val commandHistory: StateFlow<List<com.example.data.model.CommandHistoryItem>> = commandHistoryRepository.history
+
     private val actionHandler = AndroidActionHandler(
         context = application,
         notesRepository = voiceNotesRepository,
         onShowNotes = {
             _showNotesSheet.value = true
+        },
+        onShowScreenTime = {
+            refreshScreenTime()
         }
     )
 
@@ -205,12 +216,13 @@ class AkritiViewModel(application: Application) : AndroidViewModel(application) 
                 shouldContinueHandsFree = settings.value.continuousConversation
                 startListening()
             }
-            AssistantState.LISTENING -> {
+            AssistantState.LISTENING, AssistantState.LISTENING_FOR_COMMAND,
+            AssistantState.LISTENING_FOR_WAKE_WORD, AssistantState.WAKE_DETECTED -> {
                 shouldContinueHandsFree = false
                 _statusText.value = "Finalizing speech..."
                 sttManager.finishListening()
             }
-            AssistantState.PROCESSING -> {}
+            AssistantState.PROCESSING, AssistantState.EXECUTING -> {}
             AssistantState.IDLE, AssistantState.ERROR -> {
                 shouldContinueHandsFree = settings.value.continuousConversation
                 startListening()
@@ -295,8 +307,8 @@ class AkritiViewModel(application: Application) : AndroidViewModel(application) 
         // Enable hands-free continuation if setting is enabled
         shouldContinueHandsFree = settings.value.continuousConversation
 
-        // 3. Fast-Path Local Intent Check (Instant on-device execution)
-        val localIntent = intentRouter.resolveIntent(userPrompt, null)
+        // 3. Fast-Path Local Intent Check (Instant on-device execution with Conversation Context)
+        val localIntent = intentRouter.resolveIntent(userPrompt, null, contextHolder.getContext())
         val isFastPathEligible = settings.value.instantLocalExecution &&
                 attachedImageBase64 == null &&
                 intentRouter.isLocalFastPathAction(localIntent.action)
@@ -326,7 +338,7 @@ class AkritiViewModel(application: Application) : AndroidViewModel(application) 
 
             orchestratorResult.onSuccess { aiResult: AiExecutionResult ->
                 // Check if candidate intent was detected
-                val resolvedIntent = intentRouter.resolveIntent(userPrompt, aiResult.intent)
+                val resolvedIntent = intentRouter.resolveIntent(userPrompt, aiResult.intent, contextHolder.getContext())
                 var finalReply = aiResult.reply
 
                 // Dispatch safe Android action if detected
@@ -342,6 +354,15 @@ class AkritiViewModel(application: Application) : AndroidViewModel(application) 
                         ActionResult.Ignored -> {}
                     }
                     refreshDeviceStatus()
+
+                    // Update context & log history
+                    updateContextForIntent(resolvedIntent)
+                    commandHistoryRepository.addEntry(
+                        query = userPrompt,
+                        actionType = resolvedIntent.action,
+                        resultSummary = finalReply,
+                        isSuccess = true
+                    )
                 }
 
                 // Save Assistant Response
@@ -396,10 +417,35 @@ class AkritiViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private fun updateContextForIntent(intent: IntentCommand) {
+        when (intent.action) {
+            ActionType.WHATSAPP_MESSAGE, ActionType.CALL_PHONE, ActionType.DIAL_PHONE -> {
+                contextHolder.updateContact(intent.target)
+            }
+            ActionType.SET_ALARM, ActionType.CANCEL_ALARM -> {
+                val hour = intent.parameters["hour"]?.toIntOrNull()
+                val minute = intent.parameters["minute"]?.toIntOrNull()
+                contextHolder.updateAlarm(hour, minute)
+            }
+            ActionType.OPEN_APP -> {
+                contextHolder.updateApp(intent.target)
+            }
+            ActionType.SCREEN_TIME -> {
+                refreshScreenTime()
+            }
+            else -> {}
+        }
+    }
+
     private fun executeFastPathAction(intent: IntentCommand, isOfflineFallback: Boolean = false) {
+        _assistantState.value = AssistantState.EXECUTING
         val actionResult = actionHandler.handleAction(intent)
         refreshDeviceStatus()
 
+        // Update context & log history
+        updateContextForIntent(intent)
+
+        val isSuccess = actionResult !is ActionResult.Failed
         val replyText = when (actionResult) {
             is ActionResult.RequiresConfirmation -> {
                 _pendingAction.value = actionResult.pendingAction
@@ -410,6 +456,13 @@ class AkritiViewModel(application: Application) : AndroidViewModel(application) 
             is ActionResult.Failed -> "Command execute nahi ho saka: ${actionResult.error}"
             ActionResult.Ignored -> "Command execute kar diya hai."
         } + if (isOfflineFallback) " (Offline Mode)" else ""
+
+        commandHistoryRepository.addEntry(
+            query = intent.rawQuery ?: intent.action.name,
+            actionType = intent.action,
+            resultSummary = replyText,
+            isSuccess = isSuccess
+        )
 
         val assistantMsg = ChatMessage(
             role = MessageRole.ASSISTANT,
@@ -617,6 +670,46 @@ class AkritiViewModel(application: Application) : AndroidViewModel(application) 
                 AkritiWakeWordService.stop(getApplication())
             }
         }
+    }
+
+    fun openYouTube() {
+        executeFastPathAction(IntentCommand(ActionType.YOUTUBE_OPEN, rawQuery = "YouTube kholo"))
+    }
+
+    fun openWhatsApp() {
+        executeFastPathAction(IntentCommand(ActionType.WHATSAPP_OPEN, rawQuery = "WhatsApp kholo"))
+    }
+
+    fun openDialer() {
+        executeFastPathAction(IntentCommand(ActionType.DIAL_PHONE, rawQuery = "Dialer kholo"))
+    }
+
+    fun searchWeb(query: String = "") {
+        executeFastPathAction(IntentCommand(ActionType.SEARCH_WEB, target = query, rawQuery = if (query.isNotBlank()) query else "Search Google"))
+    }
+
+    fun openClockAlarm() {
+        executeFastPathAction(IntentCommand(ActionType.SET_ALARM, target = "07:00", rawQuery = "Alarm lagao"))
+    }
+
+    fun refreshScreenTime() {
+        _screenTimeSummary.value = screenTimeManager.getScreenTimeSummary()
+    }
+
+    fun grantUsageAccess() {
+        screenTimeManager.openUsageSettings()
+    }
+
+    fun clearCommandHistory() {
+        commandHistoryRepository.clearHistory()
+    }
+
+    fun deleteCommandHistory(id: String) {
+        commandHistoryRepository.deleteEntry(id)
+    }
+
+    fun setAlwaysListening(enabled: Boolean) {
+        updateSettings(settings.value.copy(alwaysListeningMode = enabled))
     }
 
     fun replaceApiKey(provider: AiProviderType, newKey: String) {

@@ -23,7 +23,8 @@ enum class ActionType {
     WHATSAPP_MESSAGE,
     YOUTUBE_OPEN,
     YOUTUBE_SEARCH,
-    CALL_PHONE
+    CALL_PHONE,
+    SCREEN_TIME
 }
 
 data class IntentCommand(

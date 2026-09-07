@@ -11,7 +11,11 @@ class IntentRouter {
      * Evaluates local device/Android intents first so that simple commands
      * do not unnecessarily hit external AI APIs (Gemini/Groq/OpenRouter).
      */
-    fun resolveIntent(userQuery: String, candidateIntent: IntentCommand?): IntentCommand {
+    fun resolveIntent(
+        userQuery: String,
+        candidateIntent: IntentCommand? = null,
+        context: com.example.domain.context.ConversationContext? = null
+    ): IntentCommand {
         if (candidateIntent != null && candidateIntent.action != ActionType.NONE) {
             return candidateIntent
         }
@@ -19,17 +23,20 @@ class IntentRouter {
         val query = userQuery.lowercase(Locale.ROOT).trim()
 
         return when {
-            // 1. WhatsApp Commands
-            isWhatsAppQuery(query) -> parseWhatsAppCommand(userQuery, query)
+            // 0. Screen Time Dashboard
+            isScreenTimeQuery(query) -> IntentCommand(ActionType.SCREEN_TIME, rawQuery = userQuery)
 
-            // 2. YouTube Commands
+            // 1. WhatsApp Commands
+            isWhatsAppQuery(query, context) -> parseWhatsAppCommand(userQuery, query, context)
+
+            // 2. YouTube Commands (including multi-step "kholo aur song play karo")
             isYouTubeQuery(query) -> parseYouTubeCommand(userQuery, query)
 
             // 3. Calling Commands
-            isCallingQuery(query) -> parseCallingCommand(userQuery, query)
+            isCallingQuery(query, context) -> parseCallingCommand(userQuery, query, context)
 
             // 4. Alarm & Reminders
-            isAlarmQuery(query) -> parseAlarmCommand(userQuery, query)
+            isAlarmQuery(query, context) -> parseAlarmCommand(userQuery, query, context)
             isTimerQuery(query) -> parseTimerCommand(userQuery, query)
             isReminderQuery(query) -> parseReminderCommand(userQuery, query)
 
@@ -105,12 +112,31 @@ class IntentRouter {
         }
     }
 
-    // --- WhatsApp Parsing ---
-    private fun isWhatsAppQuery(q: String): Boolean {
-        return q.contains("whatsapp") || q.contains("what's app") || q.contains("whats app")
+    // --- Screen Time Parsing ---
+    private fun isScreenTimeQuery(q: String): Boolean {
+        return q.contains("screen time") || q.contains("screentime") ||
+               q.contains("phone kitna chalaya") || q.contains("phone kitna use kiya") ||
+               q.contains("aaj kitna mobile chalaya") || q.contains("usage stats")
     }
 
-    private fun parseWhatsAppCommand(rawQuery: String, query: String): IntentCommand {
+    // --- WhatsApp Parsing ---
+    private fun isWhatsAppQuery(q: String, context: com.example.domain.context.ConversationContext? = null): Boolean {
+        if (q.contains("whatsapp") || q.contains("what's app") || q.contains("whats app")) return true
+        if (context?.lastContactName != null) {
+            if (q.startsWith("usko ") || q.startsWith("use ") || q.startsWith("unhe ") ||
+                q.contains("usko message") || q.contains("use message") || q.contains("unhe message") ||
+                q.contains("usko bolo") || q.contains("use bolo")) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun parseWhatsAppCommand(
+        rawQuery: String,
+        query: String,
+        context: com.example.domain.context.ConversationContext? = null
+    ): IntentCommand {
         // 1. Check if user simply wants to open WhatsApp
         val openPatterns = listOf(
             "whatsapp kholo", "open whatsapp", "whatsapp open", "whatsapp open karo",
@@ -157,7 +183,6 @@ class IntentRouter {
         }
 
         // 4. English: "send <message> to <recipient> on whatsapp"
-        // e.g. "send hi to Ansh on WhatsApp", "send hello to 9711079868 on whatsapp"
         if (message == null || recipient == null) {
             val sendMsgToRecRegex = Regex("(?i)^send\\s+(.+?)\\s+to\\s+(.+?)\\s+on\\s+whatsapp$")
             sendMsgToRecRegex.find(query)?.let {
@@ -169,7 +194,6 @@ class IntentRouter {
         }
 
         // 5. English: "send (a)? whatsapp (message)? to <recipient> saying|:|<space> <message>"
-        // e.g. "send message to 9711079868 on WhatsApp saying hello", "send a whatsapp message to Ansh: hello"
         if (message == null || recipient == null) {
             val sendToRecRegex = Regex("(?i)^send\\s+(?:a\\s+)?(?:whatsapp\\s+message|message|whatsapp)\\s+to\\s+(.+?)(?:\\s+on\\s+whatsapp)?(?:\\s+saying\\s+|:\\s*|\\s+)(.*)$")
             sendToRecRegex.find(query)?.let {
@@ -180,6 +204,20 @@ class IntentRouter {
                 }
                 if (extractedMsg.isNotBlank()) {
                     message = extractedMsg
+                }
+            }
+        }
+
+        // 6. Context-based pronoun extraction e.g. "usko hello bhejo", "use bolo kal aana"
+        if (context?.lastContactName != null) {
+            val pronounRegex = Regex("(?i)^(?:usko|use|unhe)\\s+(.+?)\\s*(?:bhejo|send\\s*karo|likho|bolo)?$")
+            pronounRegex.find(query)?.let {
+                val candidateMsg = it.groupValues[1]
+                    .replace(Regex("(?i)\\b(message|msg|bhejo|send\\s*karo)\\b"), "")
+                    .trim()
+                if (candidateMsg.isNotBlank()) {
+                    message = candidateMsg
+                    recipient = context.lastContactName
                 }
             }
         }
@@ -232,6 +270,11 @@ class IntentRouter {
 
         // Clean up recipient
         recipient = recipient?.removePrefix("akriti")?.removePrefix("please")?.trim()
+        if (recipient.isNullOrBlank() || recipient.lowercase(Locale.ROOT) in listOf("usko", "use", "unhe", "him", "her", "them")) {
+            if (context?.lastContactName != null) {
+                recipient = context.lastContactName
+            }
+        }
         if (recipient.isNullOrBlank() && message == null) {
             // Fallback recipient only if message wasn't parsed as open-and-send
             recipient = extractContactName(query, rawQuery)
@@ -284,7 +327,7 @@ class IntentRouter {
             return IntentCommand(ActionType.YOUTUBE_OPEN, rawQuery = rawQuery)
         }
 
-        // Extract search query
+        // Extract search query (handling multi-step queries like "youtube kholo aur X ka song play karo")
         var searchTerm = query
             .replace("search on youtube", "")
             .replace("search in youtube", "")
@@ -298,13 +341,24 @@ class IntentRouter {
             .replace("youtube search", "")
             .replace("youtube par chalao", "")
             .replace("youtube pe chalao", "")
+            .replace("youtube par play karo", "")
+            .replace("youtube pe play karo", "")
             .replace("youtube par", "")
             .replace("youtube pe", "")
             .replace("youtube", "")
             .replace("search karo", "")
             .replace("chalao", "")
+            .replace("play karo", "")
             .replace("play", "")
+            .replace("khol do", "")
             .replace("kholo", "")
+            .replace("ka song", "")
+            .replace("ke song", "")
+            .replace("song", "")
+            .replace("gaana", "")
+            .replace("gaane", "")
+            .replace("aur", "")
+            .replace("and", "")
             .replace("akriti", "")
             .replace("please", "")
             .trim()
@@ -313,17 +367,26 @@ class IntentRouter {
             return IntentCommand(ActionType.YOUTUBE_OPEN, rawQuery = rawQuery)
         }
 
+        val matchedTarget = preserveCaseFromRaw(rawQuery, searchTerm) ?: searchTerm
+
         return IntentCommand(
             action = ActionType.YOUTUBE_SEARCH,
-            target = searchTerm,
+            target = matchedTarget,
             rawQuery = rawQuery
         )
     }
 
     // --- Calling Parsing ---
-    private fun isCallingQuery(q: String): Boolean {
+    private fun isCallingQuery(q: String, context: com.example.domain.context.ConversationContext? = null): Boolean {
         // Exclude WhatsApp calls from standard phone dialer
         if (q.contains("whatsapp")) return false
+
+        if (context?.lastContactName != null && (
+            q.contains("usko call") || q.contains("use call") || q.contains("unhe call") ||
+            q.contains("call him") || q.contains("call her") || q.contains("call them")
+        )) {
+            return true
+        }
 
         return q.startsWith("call ") || q.startsWith("dial ") ||
                q.startsWith("phone ") || q.startsWith("make a call") ||
@@ -333,23 +396,44 @@ class IntentRouter {
                q.contains("ko phone") || q.endsWith(" call")
     }
 
-    private fun parseCallingCommand(rawQuery: String, query: String): IntentCommand {
+    private fun parseCallingCommand(
+        rawQuery: String,
+        query: String,
+        context: com.example.domain.context.ConversationContext? = null
+    ): IntentCommand {
         val digitsOnly = query.filter { it.isDigit() || it == '+' }
-        val target = if (digitsOnly.length >= 7) {
+        var target = if (digitsOnly.length >= 7) {
             digitsOnly
         } else {
             extractContactName(query, rawQuery) ?: digitsOnly.ifBlank { null }
+        }
+
+        if (target.isNullOrBlank() || target.lowercase(Locale.ROOT) in listOf("usko", "use", "unhe", "him", "her", "them")) {
+            if (context?.lastContactName != null) {
+                target = context.lastContactName
+            }
         }
 
         return IntentCommand(ActionType.CALL_PHONE, target = target, rawQuery = rawQuery)
     }
 
     // --- Alarm Parsing ---
-    private fun isAlarmQuery(q: String): Boolean {
-        return q.contains("alarm")
+    private fun isAlarmQuery(q: String, context: com.example.domain.context.ConversationContext? = null): Boolean {
+        if (q.contains("alarm")) return true
+        if (context?.lastAlarmHour != null && (
+            q.contains("cancel") || q.contains("band karo") || q.contains("hatao") ||
+            q.contains("radd karo") || q.contains("delete") || q.contains("dismiss")
+        )) {
+            return true
+        }
+        return false
     }
 
-    private fun parseAlarmCommand(rawQuery: String, query: String): IntentCommand {
+    private fun parseAlarmCommand(
+        rawQuery: String,
+        query: String,
+        context: com.example.domain.context.ConversationContext? = null
+    ): IntentCommand {
         val isCancel = query.contains("cancel") || query.contains("band karo") ||
                        query.contains("band kar do") || query.contains("band") ||
                        query.contains("hatao") || query.contains("hata do") ||
@@ -357,7 +441,13 @@ class IntentRouter {
                        query.contains("turn off") || query.contains("off karo") ||
                        query.contains("radd karo") || query.contains("stop")
 
-        val (hour, minute) = parseAlarmTime(query)
+        val hasDigits = query.any { it.isDigit() }
+        val (hour, minute) = if (!hasDigits && isCancel && context?.lastAlarmHour != null) {
+            Pair(context.lastAlarmHour, context.lastAlarmMinute ?: 0)
+        } else {
+            parseAlarmTime(query)
+        }
+
         val timeFormatted = String.format("%02d:%02d", hour, minute)
         val params = mapOf(
             "hour" to hour.toString(),
@@ -582,6 +672,7 @@ class IntentRouter {
             ActionType.DEVICE_INFO,
             ActionType.TAKE_NOTE,
             ActionType.SHOW_NOTES,
+            ActionType.SCREEN_TIME,
             ActionType.SHARE_CONTENT -> true
             ActionType.NONE -> false
         }
