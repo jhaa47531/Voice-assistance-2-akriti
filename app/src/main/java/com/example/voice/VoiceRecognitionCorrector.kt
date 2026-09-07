@@ -21,7 +21,10 @@ object VoiceRecognitionCorrector {
         "current" to listOf("karan"),
         "rowan" to listOf("rohan"),
         "puja" to listOf("pooja"),
-        "pooja" to listOf("puja")
+        "pooja" to listOf("puja"),
+        "dee" to listOf("di", "didi"),
+        "de" to listOf("di", "didi"),
+        "the" to listOf("di")
     )
 
     /**
@@ -138,9 +141,15 @@ object VoiceRecognitionCorrector {
     private fun extractNameFromCandidate(candidate: String): String {
         val q = candidate.lowercase(Locale.ROOT).trim()
 
-        // "call ansh", "dial ansh"
-        if (q.startsWith("call ") || q.startsWith("dial ")) {
-            return candidate.substring(5).trim()
+        // "make a call to ansh", "call to ansh", "phone to ansh"
+        val callToMatch = Regex("(?i)^(?:make\\s+a\\s+(?:phone\\s+)?call\\s+to|call\\s+to|phone\\s+to)\\s+(.+)").find(candidate)
+        if (callToMatch != null) {
+            return callToMatch.groupValues[1].trim()
+        }
+
+        // "call ansh", "dial ansh", "phone ansh"
+        if (q.startsWith("call ") || q.startsWith("dial ") || q.startsWith("phone ")) {
+            return candidate.substringAfter(" ").trim()
         }
 
         // "ansh ko call karo", "ansh ko phone lagao"
@@ -224,6 +233,17 @@ object VoiceRecognitionCorrector {
                     return match
                 }
             }
+        }
+
+        // 1b. Check prefix or word token match (e.g. "ansh" matches "ansh sharma", "di" matches "di airtel")
+        val prefixOrWordMatch = availableContacts.firstOrNull { contact ->
+            val contactLower = contact.trim().lowercase(Locale.ROOT)
+            contactLower == cleanQuery ||
+            contactLower.startsWith("$cleanQuery ") ||
+            contactLower.split("\\s+".toRegex()).any { it == cleanQuery }
+        }
+        if (prefixOrWordMatch != null) {
+            return prefixOrWordMatch
         }
 
         // 2. Levenshtein edit distance for short/medium names

@@ -111,23 +111,19 @@ class IntentRouter {
     }
 
     private fun parseWhatsAppCommand(rawQuery: String, query: String): IntentCommand {
-        // Check if user simply wants to open WhatsApp
+        // 1. Check if user simply wants to open WhatsApp
         val openPatterns = listOf(
             "whatsapp kholo", "open whatsapp", "whatsapp open", "whatsapp open karo",
-            "whatsapp chalao", "whatsapp khol do", "whatsapp start karo", "kholo whatsapp"
+            "whatsapp chalao", "whatsapp khol do", "whatsapp start karo", "kholo whatsapp", "launch whatsapp"
         )
         if (openPatterns.any { query == it || query == "akriti $it" } || query.trim() == "whatsapp") {
             return IntentCommand(ActionType.WHATSAPP_OPEN, rawQuery = rawQuery)
         }
 
-        // WhatsApp message commands:
-        // e.g. "Ansh ko WhatsApp par message bhejo: Kal college aana"
-        // e.g. "Ansh ko WhatsApp par bolo kal college aana"
-        // e.g. "WhatsApp par Ansh ko message bhejo: Kal aana"
         var recipient: String? = null
         var message: String? = null
 
-        // Check if there is an explicit colon separating contact and message
+        // 2. Explicit colon format e.g. "Ansh ko WhatsApp par message bhejo: Kal college aana"
         if (rawQuery.contains(":")) {
             val parts = rawQuery.split(":", limit = 2)
             val header = parts[0].lowercase(Locale.ROOT)
@@ -137,57 +133,116 @@ class IntentRouter {
             if (lowerRecipient != null) {
                 recipient = preserveCaseFromRaw(rawHeader, lowerRecipient)
             }
-        } else {
-            // Regex patterns without colon
-            // Pattern: "<name> ko whatsapp (par|pe)? (message bhejo|bolo|likho) <message>"
-            val pattern1 = Regex("(?i)^(.+?)\\s+ko\\s+whatsapp\\s*(?:par|pe)?\\s*(?:message\\s+bhejo|message\\s+karo|bolo|likho|send\\s+karo)\\s*(.*)$")
-            val match1 = pattern1.find(query)
-            if (match1 != null) {
-                val lowerRec = match1.groupValues[1].trim()
-                recipient = preserveCaseFromRaw(rawQuery, lowerRec)
-                val extractedMsg = match1.groupValues[2].trim()
-                if (extractedMsg.isNotBlank()) {
-                    message = extractedMsg
-                }
-            } else {
-                // Pattern: "whatsapp (par|pe)? (.+?) ko (message bhejo|bolo) (.*)"
-                val pattern2 = Regex("(?i)^whatsapp\\s*(?:par|pe)?\\s*(.+?)\\s+ko\\s*(?:message\\s+bhejo|bolo|likho)?\\s*(.*)$")
-                val match2 = pattern2.find(query)
-                if (match2 != null) {
-                    val lowerRec = match2.groupValues[1].trim()
-                    recipient = preserveCaseFromRaw(rawQuery, lowerRec)
-                    val extractedMsg = match2.groupValues[2].trim()
-                    if (extractedMsg.isNotBlank()) {
-                        message = extractedMsg
-                    }
-                } else {
-                    // Pattern: "send whatsapp message to <name> (saying)? (.*)"
-                    val pattern3 = Regex("(?i)^send\\s+whatsapp\\s+(?:message\\s+)?to\\s+(.+?)(?:\\s+saying\\s+|:\\s*|\\s+)(.*)$")
-                    val match3 = pattern3.find(query)
-                    if (match3 != null) {
-                        val lowerRec = match3.groupValues[1].trim()
-                        recipient = preserveCaseFromRaw(rawQuery, lowerRec)
-                        val extractedMsg = match3.groupValues[2].trim()
-                        if (extractedMsg.isNotBlank()) {
-                            message = extractedMsg
-                        }
+        }
+
+        // 3. "open whatsapp and send <message>" / "whatsapp kholo aur <message> bhejo"
+        if (message == null) {
+            val openAndSendRegex1 = Regex("(?i)^open\\s+whatsapp\\s+(?:and|&)?\\s*send\\s+(.*)$")
+            openAndSendRegex1.find(query)?.let {
+                message = it.groupValues[1].trim()
+                recipient = null
+            }
+        }
+        if (message == null) {
+            val openAndSendRegex2 = Regex("(?i)^whatsapp\\s*(?:kholo|open\\s*karo)?\\s*(?:aur|and)?\\s*(.+?)\\s*(?:bhejo|send\\s*karo)$")
+            if (openAndSendRegex2.containsMatchIn(query) && !query.contains(" ko ") && !query.contains(" to ")) {
+                openAndSendRegex2.find(query)?.let {
+                    val candidate = it.groupValues[1].trim()
+                    if (candidate.isNotBlank() && candidate != "whatsapp") {
+                        message = candidate
+                        recipient = null
                     }
                 }
             }
         }
 
-        // Fallback recipient clean up
+        // 4. English: "send <message> to <recipient> on whatsapp"
+        // e.g. "send hi to Ansh on WhatsApp", "send hello to 9711079868 on whatsapp"
+        if (message == null || recipient == null) {
+            val sendMsgToRecRegex = Regex("(?i)^send\\s+(.+?)\\s+to\\s+(.+?)\\s+on\\s+whatsapp$")
+            sendMsgToRecRegex.find(query)?.let {
+                val extractedMsg = it.groupValues[1].trim()
+                val extractedRec = it.groupValues[2].trim()
+                message = extractedMsg
+                recipient = preserveCaseFromRaw(rawQuery, extractedRec)
+            }
+        }
+
+        // 5. English: "send (a)? whatsapp (message)? to <recipient> saying|:|<space> <message>"
+        // e.g. "send message to 9711079868 on WhatsApp saying hello", "send a whatsapp message to Ansh: hello"
+        if (message == null || recipient == null) {
+            val sendToRecRegex = Regex("(?i)^send\\s+(?:a\\s+)?(?:whatsapp\\s+message|message|whatsapp)\\s+to\\s+(.+?)(?:\\s+on\\s+whatsapp)?(?:\\s+saying\\s+|:\\s*|\\s+)(.*)$")
+            sendToRecRegex.find(query)?.let {
+                val extractedRec = it.groupValues[1].trim()
+                val extractedMsg = it.groupValues[2].trim()
+                if (extractedRec.isNotBlank()) {
+                    recipient = preserveCaseFromRaw(rawQuery, extractedRec)
+                }
+                if (extractedMsg.isNotBlank()) {
+                    message = extractedMsg
+                }
+            }
+        }
+
+        // 6. Hindi/Hinglish pattern: "<recipient> ko whatsapp (par|pe)? <message> bhejo"
+        // e.g. "9711079868 ko WhatsApp par heelo bhejo"
+        // e.g. "Ansh ko WhatsApp par hello bhejo"
+        // e.g. "Mom ko whatsapp pe kal aana likho"
+        if (message == null || recipient == null) {
+            val hindiPattern1 = Regex("(?i)^(.+?)\\s+ko\\s+whatsapp\\s*(?:par|pe)?\\s*(?:message\\s+)?(.+?)\\s*(?:bhejo|bhej\\s*do|send\\s*karo|karo|bolo|likho)$")
+            hindiPattern1.find(query)?.let {
+                val lowerRec = it.groupValues[1].trim()
+                val extractedMsg = it.groupValues[2].trim()
+                recipient = preserveCaseFromRaw(rawQuery, lowerRec)
+                if (extractedMsg.isNotBlank()) {
+                    message = extractedMsg
+                }
+            }
+        }
+
+        // 7. Hindi/Hinglish pattern: "<recipient> ko whatsapp (par|pe)? (message bhejo|bolo|likho) <message>"
+        // e.g. "Ansh ko whatsapp par message bhejo kal aana"
+        // e.g. "Ansh ko whatsapp par bolo kal college aana"
+        if (message == null || recipient == null) {
+            val hindiPattern2 = Regex("(?i)^(.+?)\\s+ko\\s+whatsapp\\s*(?:par|pe)?\\s*(?:message\\s+bhejo|message\\s+karo|bolo|likho|send\\s+karo)\\s+(.+)$")
+            hindiPattern2.find(query)?.let {
+                val lowerRec = it.groupValues[1].trim()
+                val extractedMsg = it.groupValues[2].trim()
+                recipient = preserveCaseFromRaw(rawQuery, lowerRec)
+                if (extractedMsg.isNotBlank()) {
+                    message = extractedMsg
+                }
+            }
+        }
+
+        // 8. Hindi/Hinglish pattern: "whatsapp (par|pe)? <recipient> ko (message bhejo|bolo)? <message>"
+        // e.g. "WhatsApp par Ansh ko bolo kal aana"
+        // e.g. "WhatsApp par Ansh ko hello bhejo"
+        if (message == null || recipient == null) {
+            val hindiPattern3 = Regex("(?i)^whatsapp\\s*(?:par|pe)?\\s*(.+?)\\s+ko\\s*(?:message\\s+bhejo|bolo|likho)?\\s*(.*)$")
+            hindiPattern3.find(query)?.let {
+                val lowerRec = it.groupValues[1].trim()
+                val extractedMsg = it.groupValues[2].trim().removeSuffix(" bhejo").removeSuffix(" send karo").trim()
+                recipient = preserveCaseFromRaw(rawQuery, lowerRec)
+                if (extractedMsg.isNotBlank()) {
+                    message = extractedMsg
+                }
+            }
+        }
+
+        // Clean up recipient
         recipient = recipient?.removePrefix("akriti")?.removePrefix("please")?.trim()
-        if (recipient.isNullOrBlank()) {
+        if (recipient.isNullOrBlank() && message == null) {
+            // Fallback recipient only if message wasn't parsed as open-and-send
             recipient = extractContactName(query, rawQuery)
         }
 
         val params = mutableMapOf<String, String>()
         if (!recipient.isNullOrBlank()) {
-            params["recipient"] = recipient
+            params["recipient"] = recipient!!
         }
         if (!message.isNullOrBlank()) {
-            params["message"] = message
+            params["message"] = message!!
         }
 
         return IntentCommand(
@@ -271,6 +326,8 @@ class IntentRouter {
         if (q.contains("whatsapp")) return false
 
         return q.startsWith("call ") || q.startsWith("dial ") ||
+               q.startsWith("phone ") || q.startsWith("make a call") ||
+               q.startsWith("make a phone call") ||
                q.contains("call karo") || q.contains("phone lagao") ||
                q.contains("phone karo") || q.contains("ko call") ||
                q.contains("ko phone") || q.endsWith(" call")
@@ -293,20 +350,29 @@ class IntentRouter {
     }
 
     private fun parseAlarmCommand(rawQuery: String, query: String): IntentCommand {
+        val isCancel = query.contains("cancel") || query.contains("band karo") ||
+                       query.contains("band kar do") || query.contains("band") ||
+                       query.contains("hatao") || query.contains("hata do") ||
+                       query.contains("delete") || query.contains("dismiss") ||
+                       query.contains("turn off") || query.contains("off karo") ||
+                       query.contains("radd karo") || query.contains("stop")
+
         val (hour, minute) = parseAlarmTime(query)
         val timeFormatted = String.format("%02d:%02d", hour, minute)
         val params = mapOf(
             "hour" to hour.toString(),
             "minute" to minute.toString()
         )
-        return IntentCommand(ActionType.SET_ALARM, target = timeFormatted, rawQuery = rawQuery, parameters = params)
+        val action = if (isCancel) ActionType.CANCEL_ALARM else ActionType.SET_ALARM
+        return IntentCommand(action, target = timeFormatted, rawQuery = rawQuery, parameters = params)
     }
 
     private fun parseAlarmTime(query: String): Pair<Int, Int> {
-        val isPm = query.contains("pm") || query.contains("shaam") || query.contains("dopahar") || query.contains("raat") || query.contains("evening") || query.contains("night")
+        val isPm = query.contains("pm") || query.contains("shaam") || query.contains("dopahar") ||
+                   query.contains("raat") || query.contains("evening") || query.contains("night")
         val isAm = query.contains("am") || query.contains("subah") || query.contains("morning")
 
-        // 1. Check HH:MM format e.g. "6:30", "07:15"
+        // 1. HH:MM format e.g. "07:00", "7:00 AM", "19:00", "6:30"
         val colonRegex = Regex("(\\d{1,2}):(\\d{2})")
         colonRegex.find(query)?.let { match ->
             var h = match.groupValues[1].toIntOrNull() ?: 7
@@ -316,9 +382,19 @@ class IntentRouter {
             return Pair(h, m)
         }
 
-        // 2. Check "HH baje" or "HH:MM baje" or "HH am/pm" e.g. "7 baje", "8:30 baje", "6 am"
-        val bajeRegex = Regex("(\\d{1,2})\\s*(?:baje|am|pm)?")
-        bajeRegex.find(query)?.let { match ->
+        // 2. Check "HH o'clock", "HH oclock", "HH baje", "HH am/pm"
+        // e.g. "7 o'clock", "7 oclock", "7 baje", "7 AM", "8 pm"
+        val hourWordRegex = Regex("(\\d{1,2})\\s*(?:o'clock|oclock|o\\s*clock|baje|am|pm)")
+        hourWordRegex.find(query)?.let { match ->
+            var h = match.groupValues[1].toIntOrNull() ?: 7
+            if (isPm && h < 12) h += 12
+            if (isAm && h == 12) h = 0
+            return Pair(h, 0)
+        }
+
+        // 3. Check standalone number e.g. "19", "7"
+        val numberRegex = Regex("(\\d{1,2})")
+        numberRegex.find(query)?.let { match ->
             var h = match.groupValues[1].toIntOrNull() ?: 7
             if (isPm && h < 12) h += 12
             if (isAm && h == 12) h = 0
@@ -497,6 +573,7 @@ class IntentRouter {
             ActionType.OPEN_APP,
             ActionType.OPEN_SETTINGS,
             ActionType.SET_ALARM,
+            ActionType.CANCEL_ALARM,
             ActionType.SET_TIMER,
             ActionType.SET_REMINDER,
             ActionType.TOGGLE_FLASHLIGHT,
@@ -511,6 +588,20 @@ class IntentRouter {
     }
 
     fun extractContactName(query: String, rawQuery: String = query): String? {
+        // e.g. "make a call to Ansh", "make a phone call to Ansh"
+        val makeCallRegex = Regex("(?i)^make\\s+(?:a\\s+)?(?:phone\\s+)?call\\s+to\\s+(.+)$")
+        makeCallRegex.find(query)?.let {
+            val name = it.groupValues[1].trim()
+            if (name.isNotBlank()) return preserveCaseFromRaw(rawQuery, name)
+        }
+
+        // e.g. "call to Ansh", "phone to Ansh", "dial to Ansh"
+        val callToRegex = Regex("(?i)^(?:call|phone|dial)\\s+to\\s+(.+)$")
+        callToRegex.find(query)?.let {
+            val name = it.groupValues[1].trim()
+            if (name.isNotBlank()) return preserveCaseFromRaw(rawQuery, name)
+        }
+
         // e.g. "Ansh ko call karo", "Mom ko phone lagao"
         val koCallRegex = Regex("(?i)^(.+?)\\s+ko\\s+(?:call|phone)\\s*(?:karo|lagao|lagana)?$")
         koCallRegex.find(query)?.let {
@@ -518,20 +609,17 @@ class IntentRouter {
             if (name.isNotBlank()) return preserveCaseFromRaw(rawQuery, name)
         }
 
-        // e.g. "call karo Ansh ko"
-        val callKaroRegex = Regex("(?i)^(?:call|phone)\\s*(?:karo|lagao)?\\s+(.+?)(?:\\s+ko)?$")
+        // e.g. "call karo Ansh ko", "phone lagao Ansh ko"
+        val callKaroRegex = Regex("(?i)^(?:call|phone)\\s+(?:karo|lagao)\\s+(.+?)(?:\\s+ko)?$")
         callKaroRegex.find(query)?.let {
             val name = it.groupValues[1].trim().removeSuffix(" ko")
             if (name.isNotBlank()) return preserveCaseFromRaw(rawQuery, name)
         }
 
-        // e.g. "call Ansh", "dial Ansh"
-        if (query.startsWith("call ", ignoreCase = true)) {
-            val name = query.substring(5).trim()
-            if (name.isNotBlank()) return preserveCaseFromRaw(rawQuery, name)
-        }
-        if (query.startsWith("dial ", ignoreCase = true)) {
-            val name = query.substring(5).trim()
+        // e.g. "call Ansh", "dial Ansh", "phone Ansh"
+        val directCallRegex = Regex("(?i)^(?:call|dial|phone)\\s+(.+?)(?:\\s+ko)?$")
+        directCallRegex.find(query)?.let {
+            val name = it.groupValues[1].trim().removeSuffix(" ko")
             if (name.isNotBlank()) return preserveCaseFromRaw(rawQuery, name)
         }
 

@@ -6,6 +6,7 @@ enum class ActionType {
     SEARCH_WEB,
     LAUNCH_URL,
     SET_ALARM,
+    CANCEL_ALARM,
     SET_TIMER,
     SET_REMINDER,
     TAKE_NOTE,

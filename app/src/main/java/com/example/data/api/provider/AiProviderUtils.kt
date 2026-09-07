@@ -25,11 +25,17 @@ object AiProviderUtils {
         - SEARCH_WEB: Web search query (target = search keywords)
         - LAUNCH_URL: Opening a website or URL in browser (target = URL or domain)
         - SET_ALARM: Setting alarm (target = time string e.g. "07:00", "7:30 AM", query = optional label)
+        - CANCEL_ALARM: Cancelling or turning off an alarm (target = time string e.g. "07:00", "7 AM")
         - SET_TIMER: Setting countdown timer (target = duration in seconds or minutes e.g. "300" for 5 minutes, "60" for 1 min)
         - SET_REMINDER: Setting reminder or calendar event (target = title, query = description or date)
         - TAKE_NOTE: Taking, recording, or saving a voice note / memo (target = note content, query = optional title)
         - SHOW_NOTES: Opening or showing saved voice notes (target = null)
-        - DIAL_PHONE: Phone call or opening dialer (target = phone number or contact name)
+        - CALL_PHONE: Making a direct phone call (target = phone number or contact name)
+        - DIAL_PHONE: Opening phone dialer (target = phone number or contact name)
+        - WHATSAPP_OPEN: Opening WhatsApp app without a specific message
+        - WHATSAPP_MESSAGE: Sending WhatsApp message (target = recipient name or number, query = exact message text)
+        - YOUTUBE_OPEN: Opening YouTube app
+        - YOUTUBE_SEARCH: Searching YouTube (target = search query)
         - SEND_MESSAGE: Sending SMS/text (target = recipient phone number or name, query = message text)
         - BATTERY_INFO: Checking battery level and charging state
         - DEVICE_INFO: Asking about phone model, specs, Android version
@@ -42,7 +48,7 @@ object AiProviderUtils {
         You MUST always return a valid JSON object strictly formatted as:
         {
           "reply": "Your spoken natural response here",
-          "action": "NONE" | "OPEN_APP" | "OPEN_SETTINGS" | "SEARCH_WEB" | "LAUNCH_URL" | "SET_ALARM" | "SET_TIMER" | "SET_REMINDER" | "TAKE_NOTE" | "SHOW_NOTES" | "DIAL_PHONE" | "SEND_MESSAGE" | "BATTERY_INFO" | "DEVICE_INFO" | "DATE_TIME" | "TOGGLE_FLASHLIGHT" | "SHARE_CONTENT",
+          "action": "NONE" | "OPEN_APP" | "OPEN_SETTINGS" | "SEARCH_WEB" | "LAUNCH_URL" | "SET_ALARM" | "CANCEL_ALARM" | "SET_TIMER" | "SET_REMINDER" | "TAKE_NOTE" | "SHOW_NOTES" | "CALL_PHONE" | "DIAL_PHONE" | "WHATSAPP_OPEN" | "WHATSAPP_MESSAGE" | "YOUTUBE_OPEN" | "YOUTUBE_SEARCH" | "SEND_MESSAGE" | "BATTERY_INFO" | "DEVICE_INFO" | "DATE_TIME" | "TOGGLE_FLASHLIGHT" | "SHARE_CONTENT",
           "target": "target name, app, or parameter or null",
           "query": "secondary detail/message or null",
           "params": {}

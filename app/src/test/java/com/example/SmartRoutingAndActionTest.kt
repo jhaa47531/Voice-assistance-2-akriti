@@ -162,6 +162,43 @@ class SmartRoutingAndActionTest {
     }
 
     @Test
+    fun `whatsapp message with number recipient and hindi markers is parsed accurately`() {
+        val cmd = router.resolveIntent("9711079868 ko WhatsApp par heelo bhejo", null)
+        assertEquals(ActionType.WHATSAPP_MESSAGE, cmd.action)
+        assertEquals("9711079868", cmd.parameters["recipient"])
+        assertEquals("heelo", cmd.parameters["message"])
+    }
+
+    @Test
+    fun `alarm cancellation commands are recognized and parsed`() {
+        val cmd1 = router.resolveIntent("7 o'clock ka alarm cancel karo", null)
+        assertEquals(ActionType.CANCEL_ALARM, cmd1.action)
+        assertEquals("7", cmd1.parameters["hour"])
+
+        val cmd2 = router.resolveIntent("cancel 7 am alarm", null)
+        assertEquals(ActionType.CANCEL_ALARM, cmd2.action)
+        assertEquals("7", cmd2.parameters["hour"])
+
+        val cmd3 = router.resolveIntent("alarm cancel karo", null)
+        assertEquals(ActionType.CANCEL_ALARM, cmd3.action)
+    }
+
+    @Test
+    fun `english calling commands are parsed accurately`() {
+        val cmd1 = router.resolveIntent("make a call to Mom", null)
+        assertEquals(ActionType.CALL_PHONE, cmd1.action)
+        assertEquals("Mom", cmd1.target)
+
+        val cmd2 = router.resolveIntent("call to Rahul", null)
+        assertEquals(ActionType.CALL_PHONE, cmd2.action)
+        assertEquals("Rahul", cmd2.target)
+
+        val cmd3 = router.resolveIntent("di ko call karo", null)
+        assertEquals(ActionType.CALL_PHONE, cmd3.action)
+        assertEquals("di", cmd3.target)
+    }
+
+    @Test
     fun `general questions fall through to remote AI execution`() {
         val query1 = router.resolveIntent("What is the difference between SQL and NoSQL?", null)
         assertEquals(ActionType.NONE, query1.action)

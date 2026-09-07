@@ -10,6 +10,7 @@ import com.example.data.model.ActionType
 import com.example.data.model.AiProviderType
 import com.example.data.model.AssistantState
 import com.example.data.model.ChatMessage
+import com.example.data.model.ContactMatch
 import com.example.data.model.IntentCommand
 import com.example.data.model.MessageRole
 import com.example.data.model.PendingAction
@@ -243,7 +244,17 @@ class AkritiViewModel(application: Application) : AndroidViewModel(application) 
         // Check if there is an active pending confirmation action
         val currentPending = _pendingAction.value
         if (currentPending != null) {
-            if (intentRouter.isAffirmativeResponse(userPrompt)) {
+            if (currentPending is PendingAction.DisambiguateContact) {
+                val chosenContact = resolveDisambiguation(userPrompt, currentPending.contacts)
+                if (chosenContact != null) {
+                    _pendingAction.value = null
+                    executeDisambiguatedAction(currentPending, chosenContact)
+                    return
+                } else if (intentRouter.isNegativeResponse(userPrompt)) {
+                    cancelPendingAction()
+                    return
+                }
+            } else if (intentRouter.isAffirmativeResponse(userPrompt)) {
                 confirmPendingAction()
                 return
             } else if (intentRouter.isNegativeResponse(userPrompt)) {
@@ -423,6 +434,67 @@ class AkritiViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private fun resolveDisambiguation(userPrompt: String, contacts: List<ContactMatch>): ContactMatch? {
+        val q = userPrompt.trim().lowercase(java.util.Locale.ROOT)
+
+        // Ordinal / index patterns
+        val index = when {
+            Regex("(?i)\\b(first|1st|1|one|pehla|pehle|pehla number|ek)\\b").containsMatchIn(q) -> 0
+            Regex("(?i)\\b(second|2nd|2|two|doosra|dusra|do)\\b").containsMatchIn(q) -> 1
+            Regex("(?i)\\b(third|3rd|3|three|teesra|tisra|teesre|teen)\\b").containsMatchIn(q) -> 2
+            Regex("(?i)\\b(fourth|4th|4|four|chautha|char)\\b").containsMatchIn(q) -> 3
+            Regex("(?i)\\b(fifth|5th|5|five|paanchwa|panch)\\b").containsMatchIn(q) -> 4
+            else -> -1
+        }
+
+        if (index in contacts.indices) {
+            return contacts[index]
+        }
+
+        // Substring / Name or Number match
+        val cleanDigits = q.filter { it.isDigit() }
+        if (cleanDigits.length >= 3) {
+            val numMatch = contacts.firstOrNull { it.number.replace(" ", "").replace("-", "").contains(cleanDigits) }
+            if (numMatch != null) return numMatch
+        }
+
+        for (contact in contacts) {
+            if (contact.name.isNotBlank() && q.contains(contact.name.lowercase(java.util.Locale.ROOT))) {
+                return contact
+            }
+        }
+
+        return null
+    }
+
+    private fun executeDisambiguatedAction(pending: PendingAction.DisambiguateContact, chosen: ContactMatch) {
+        val result = if (pending.targetAction == ActionType.CALL_PHONE) {
+            actionHandler.initiateCall(chosen.name, chosen.number)
+        } else {
+            actionHandler.openWhatsAppChatWithMessage(chosen.number, chosen.name, pending.pendingMessage ?: "")
+        }
+
+        val replyText = when (result) {
+            is ActionResult.Handled -> result.message
+            is ActionResult.ExecutedWithInfo -> result.info
+            is ActionResult.Failed -> result.error
+            else -> "Action execute kar diya hai."
+        }
+
+        val assistantMsg = ChatMessage(
+            role = MessageRole.ASSISTANT,
+            text = replyText
+        )
+        conversationRepository.addMessage(assistantMsg)
+
+        if (settings.value.autoSpeak) {
+            speakMessage(replyText)
+        } else {
+            _assistantState.value = AssistantState.IDLE
+            _statusText.value = "Tap to speak to Akriti"
+        }
+    }
+
     fun confirmPendingAction() {
         val pending = _pendingAction.value ?: return
         _pendingAction.value = null
@@ -430,6 +502,18 @@ class AkritiViewModel(application: Application) : AndroidViewModel(application) 
         val result = when (pending) {
             is PendingAction.SendWhatsAppMessage -> actionHandler.executeConfirmedWhatsApp(pending)
             is PendingAction.MakePhoneCall -> actionHandler.executeConfirmedCall(pending)
+            is PendingAction.DisambiguateContact -> {
+                val chosen = pending.contacts.firstOrNull()
+                if (chosen != null) {
+                    if (pending.targetAction == ActionType.CALL_PHONE) {
+                        actionHandler.initiateCall(chosen.name, chosen.number)
+                    } else {
+                        actionHandler.openWhatsAppChatWithMessage(chosen.number, chosen.name, pending.pendingMessage ?: "")
+                    }
+                } else {
+                    ActionResult.Failed("Contact select nahi ho saka.")
+                }
+            }
         }
 
         val replyText = when (result) {

@@ -14,7 +14,9 @@ import android.provider.CalendarContract
 import android.provider.ContactsContract
 import android.provider.Settings
 import androidx.core.content.ContextCompat
+import com.example.alarm.AkritiAlarmScheduler
 import com.example.data.model.ActionType
+import com.example.data.model.ContactMatch
 import com.example.data.model.IntentCommand
 import com.example.data.model.PendingAction
 import com.example.data.repository.VoiceNotesRepository
@@ -22,8 +24,6 @@ import com.example.voice.VoiceRecognitionCorrector
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-
-data class ContactMatch(val id: String, val name: String, val number: String)
 
 sealed class ActionResult {
     data class Handled(val message: String) : ActionResult()
@@ -41,6 +41,8 @@ class AndroidActionHandler(
     private val notesRepository: VoiceNotesRepository? = null,
     private val onShowNotes: (() -> Unit)? = null
 ) {
+
+    private val alarmScheduler = AkritiAlarmScheduler(context)
 
     companion object {
         private var isTorchOn = false
@@ -74,6 +76,7 @@ class AndroidActionHandler(
             ActionType.LAUNCH_URL -> launchUrl(intent.target)
             ActionType.SET_TIMER -> setTimer(intent.target, intent.parameters)
             ActionType.SET_ALARM -> setAlarm(intent.target, intent.parameters, intent.rawQuery)
+            ActionType.CANCEL_ALARM -> cancelAlarm(intent.target, intent.parameters, intent.rawQuery)
             ActionType.SET_REMINDER -> setReminder(intent.target, intent.rawQuery)
             ActionType.TAKE_NOTE -> saveVoiceNote(intent.target ?: intent.rawQuery)
             ActionType.SHOW_NOTES -> showNotesList()
@@ -118,70 +121,94 @@ class AndroidActionHandler(
         val hasLetters = recipient.any { it.isLetter() }
 
         if (!hasLetters && digitsCount >= 7) {
-            return ActionResult.RequiresConfirmation(
-                prompt = "$recipient ko WhatsApp par '$message' bhejna hai. Kya main send karoon?",
-                pendingAction = PendingAction.SendWhatsAppMessage(
-                    contactName = recipient,
-                    phoneNumber = recipient,
-                    messageText = message
-                )
+            return openWhatsAppChatWithMessage(
+                phoneNumber = recipient,
+                contactName = recipient,
+                messageText = message
             )
+        }
+
+        val hasReadContacts = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.READ_CONTACTS
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (!hasReadContacts) {
+            return ActionResult.Failed("Contact se WhatsApp message bhejne ke liye Contacts permission ki zaroorat hai.")
         }
 
         val matches = findContactsByName(recipient)
         return when {
             matches.isEmpty() -> {
-                ActionResult.Failed("Mujhe '$recipient' naam ka koi contact nahi mila. Kripya phone number ya sahi naam batayein.")
+                ActionResult.Failed("Mujhe '$recipient' naam ka koi contact nahi mila. Kripya phone number batayein.")
             }
             matches.size > 1 -> {
-                val list = matches.take(3).joinToString(", ") { "${it.name} (${it.number})" }
-                ActionResult.Handled("Mujhe '$recipient' ke liye multiple contacts mile: $list. Kise WhatsApp message bhejna hai?")
+                val list = matches.take(3).mapIndexed { idx, c -> "${idx + 1}. ${c.name} (${c.number})" }.joinToString(", ")
+                ActionResult.RequiresConfirmation(
+                    prompt = "Mujhe '$recipient' ke liye multiple contacts mile: $list. Kise WhatsApp message bhejna hai?",
+                    pendingAction = PendingAction.DisambiguateContact(
+                        contacts = matches,
+                        targetAction = ActionType.WHATSAPP_MESSAGE,
+                        pendingMessage = message
+                    )
+                )
             }
             else -> {
                 val match = matches.first()
-                ActionResult.RequiresConfirmation(
-                    prompt = "${match.name} (${match.number}) ko WhatsApp par '$message' bhejna hai. Kya main send karoon?",
-                    pendingAction = PendingAction.SendWhatsAppMessage(
-                        contactName = match.name,
-                        phoneNumber = match.number,
-                        messageText = message
-                    )
+                openWhatsAppChatWithMessage(
+                    phoneNumber = match.number,
+                    contactName = match.name,
+                    messageText = message
                 )
             }
         }
     }
 
-    fun executeConfirmedWhatsApp(pending: PendingAction.SendWhatsAppMessage): ActionResult {
+    fun openWhatsAppChatWithMessage(phoneNumber: String, contactName: String, messageText: String): ActionResult {
         return try {
-            val rawNumber = pending.phoneNumber.filter { it.isDigit() || it == '+' }
+            val rawNumber = phoneNumber.filter { it.isDigit() || it == '+' }
             val cleanedNumber = if (!rawNumber.startsWith("+") && rawNumber.length == 10) {
                 "91$rawNumber"
             } else {
                 rawNumber.removePrefix("+")
             }
 
-            val encodedMessage = Uri.encode(pending.messageText)
-            val uri = Uri.parse("https://api.whatsapp.com/send?phone=$cleanedNumber&text=$encodedMessage")
+            val encodedMessage = Uri.encode(messageText)
+            val uri = Uri.parse("https://wa.me/$cleanedNumber?text=$encodedMessage")
 
             val intent = Intent(Intent.ACTION_VIEW, uri).apply {
                 setPackage("com.whatsapp")
+                putExtra(Intent.EXTRA_TEXT, messageText)
+                putExtra("text", messageText)
+                putExtra("sms_body", messageText)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
 
             val pm = context.packageManager
             if (intent.resolveActivity(pm) != null) {
                 context.startActivity(intent)
-                ActionResult.Handled("${pending.contactName} ko WhatsApp message bhejne ke liye chat open kar di hai.")
+                ActionResult.Handled("$contactName ke liye WhatsApp chat open kar di hai.")
             } else {
                 val fallbackIntent = Intent(Intent.ACTION_VIEW, uri).apply {
+                    putExtra(Intent.EXTRA_TEXT, messageText)
+                    putExtra("text", messageText)
+                    putExtra("sms_body", messageText)
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 context.startActivity(fallbackIntent)
-                ActionResult.Handled("${pending.contactName} ke liye WhatsApp link open kar diya hai.")
+                ActionResult.Handled("$contactName ke liye WhatsApp link open kar diya hai.")
             }
         } catch (e: Exception) {
             ActionResult.Failed("WhatsApp message bhejne mein dikkat aayi: ${e.localizedMessage}")
         }
+    }
+
+    fun executeConfirmedWhatsApp(pending: PendingAction.SendWhatsAppMessage): ActionResult {
+        return openWhatsAppChatWithMessage(
+            phoneNumber = pending.phoneNumber,
+            contactName = pending.contactName,
+            messageText = pending.messageText
+        )
     }
 
     // --- YouTube Integration ---
@@ -247,13 +274,16 @@ class AndroidActionHandler(
         val hasLetters = cleaned.any { it.isLetter() }
 
         if (!hasLetters && digitsCount >= 3) {
-            return ActionResult.RequiresConfirmation(
-                prompt = "$cleaned ko call lagayein?",
-                pendingAction = PendingAction.MakePhoneCall(
-                    contactName = cleaned,
-                    phoneNumber = cleaned
-                )
-            )
+            return initiateCall(contactName = cleaned, phoneNumber = cleaned)
+        }
+
+        val hasReadContacts = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.READ_CONTACTS
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (!hasReadContacts) {
+            return ActionResult.Failed("Contact se call karne ke liye Contacts permission ki zaroorat hai.")
         }
 
         val matches = findContactsByName(cleaned)
@@ -262,23 +292,23 @@ class AndroidActionHandler(
                 ActionResult.Handled("Mujhe '$cleaned' naam ka koi contact nahi mila.")
             }
             matches.size > 1 -> {
-                val list = matches.take(3).joinToString(", ") { "${it.name} (${it.number})" }
-                ActionResult.Handled("Mujhe '$cleaned' ke liye multiple contacts mile: $list. Kise call karoon?")
+                val list = matches.take(3).mapIndexed { idx, c -> "${idx + 1}. ${c.name} (${c.number})" }.joinToString(", ")
+                ActionResult.RequiresConfirmation(
+                    prompt = "Mujhe '$cleaned' ke liye multiple contacts mile: $list. Kise call karoon?",
+                    pendingAction = PendingAction.DisambiguateContact(
+                        contacts = matches,
+                        targetAction = ActionType.CALL_PHONE
+                    )
+                )
             }
             else -> {
                 val match = matches.first()
-                ActionResult.RequiresConfirmation(
-                    prompt = "${match.name} (${match.number}) ko call lagayein?",
-                    pendingAction = PendingAction.MakePhoneCall(
-                        contactName = match.name,
-                        phoneNumber = match.number
-                    )
-                )
+                initiateCall(contactName = match.name, phoneNumber = match.number)
             }
         }
     }
 
-    fun executeConfirmedCall(pending: PendingAction.MakePhoneCall): ActionResult {
+    fun initiateCall(contactName: String, phoneNumber: String): ActionResult {
         val hasCallPermission = ContextCompat.checkSelfPermission(
             context,
             Manifest.permission.CALL_PHONE
@@ -286,21 +316,25 @@ class AndroidActionHandler(
 
         return try {
             if (hasCallPermission) {
-                val callIntent = Intent(Intent.ACTION_CALL, Uri.parse("tel:${pending.phoneNumber}")).apply {
+                val callIntent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$phoneNumber")).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 context.startActivity(callIntent)
-                ActionResult.Handled("${pending.contactName} ko call lagayi ja rahi hai.")
+                ActionResult.Handled("$contactName ko call lagayi ja rahi hai.")
             } else {
-                val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${pending.phoneNumber}")).apply {
+                val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$phoneNumber")).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 context.startActivity(dialIntent)
-                ActionResult.Handled("${pending.contactName} ka number (${pending.phoneNumber}) dialer mein open kar diya hai.")
+                ActionResult.Failed("Direct call lagane ke liye Phone permission ki zaroorat hai. Dialer open kar diya hai.")
             }
         } catch (e: Exception) {
             ActionResult.Failed("Call lagane mein dikkat aayi: ${e.localizedMessage}")
         }
+    }
+
+    fun executeConfirmedCall(pending: PendingAction.MakePhoneCall): ActionResult {
+        return initiateCall(pending.contactName, pending.phoneNumber)
     }
 
     // --- Voice Notes ---
@@ -552,17 +586,85 @@ class AndroidActionHandler(
             val finalHour = (hour ?: 7).coerceIn(0, 23)
             val finalMinute = minute.coerceIn(0, 59)
 
-            val intent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
-                putExtra(AlarmClock.EXTRA_MESSAGE, "Akriti Alarm")
-                putExtra(AlarmClock.EXTRA_HOUR, finalHour)
-                putExtra(AlarmClock.EXTRA_MINUTES, finalMinute)
-                putExtra(AlarmClock.EXTRA_SKIP_UI, false)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivity(intent)
-            ActionResult.Handled("$finalHour:${String.format("%02d", finalMinute)} ka alarm set kar diya hai.")
+            // Schedule with AlarmManager & persistent store
+            alarmScheduler.scheduleAlarm(finalHour, finalMinute, "Akriti Alarm")
+
+            val timeDisplay = String.format(Locale.ROOT, "%02d:%02d", finalHour, finalMinute)
+            ActionResult.Handled("$timeDisplay ka alarm set kar diya hai.")
         } catch (e: Exception) {
-            ActionResult.Failed("Alarm set nahi ho saka.")
+            ActionResult.Failed("Alarm set nahi ho saka: ${e.localizedMessage}")
+        }
+    }
+
+    private fun cancelAlarm(target: String?, params: Map<String, String>, rawQuery: String?): ActionResult {
+        return try {
+            var hour = params["hour"]?.toIntOrNull()
+            var minute = params["minute"]?.toIntOrNull()
+
+            if (hour == null && !target.isNullOrBlank()) {
+                val timeParts = target.split(":")
+                if (timeParts.size >= 2) {
+                    hour = timeParts[0].filter { it.isDigit() }.toIntOrNull()
+                    minute = timeParts[1].filter { it.isDigit() }.toIntOrNull()
+                } else {
+                    hour = target.filter { it.isDigit() }.toIntOrNull()
+                }
+
+                if (target.contains("pm", ignoreCase = true) && (hour ?: 0) < 12) {
+                    hour = (hour ?: 0) + 12
+                }
+            }
+
+            if (hour != null) {
+                val finalHour = hour.coerceIn(0, 23)
+                val finalMinute = minute?.coerceIn(0, 59)
+                val matchingAlarms = alarmScheduler.findMatchingAlarms(finalHour, finalMinute)
+
+                if (matchingAlarms.isNotEmpty()) {
+                    for (alarm in matchingAlarms) {
+                        alarmScheduler.cancelAlarm(alarm)
+                    }
+                    val timeDisplay = if (finalMinute != null) {
+                        String.format(Locale.ROOT, "%02d:%02d", finalHour, finalMinute)
+                    } else {
+                        String.format(Locale.ROOT, "%02d:00", finalHour)
+                    }
+                    ActionResult.Handled("$timeDisplay ka alarm cancel kar diya hai.")
+                } else {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        try {
+                            val dismissIntent = Intent(AlarmClock.ACTION_DISMISS_ALARM).apply {
+                                putExtra(AlarmClock.EXTRA_ALARM_SEARCH_MODE, AlarmClock.ALARM_SEARCH_MODE_TIME)
+                                putExtra(AlarmClock.EXTRA_HOUR, finalHour)
+                                if (finalMinute != null) {
+                                    putExtra(AlarmClock.EXTRA_MINUTES, finalMinute)
+                                }
+                                putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            if (dismissIntent.resolveActivity(context.packageManager) != null) {
+                                context.startActivity(dismissIntent)
+                                val timeDisplay = String.format(Locale.ROOT, "%02d:%02d", finalHour, finalMinute ?: 0)
+                                return ActionResult.Handled("$timeDisplay ka alarm cancel kar diya hai.")
+                            }
+                        } catch (_: Exception) {}
+                    }
+                    val timeDisplay = String.format(Locale.ROOT, "%02d:%02d", finalHour, finalMinute ?: 0)
+                    ActionResult.Handled("Mujhe $timeDisplay ka koi active alarm nahi mila.")
+                }
+            } else {
+                val activeAlarms = alarmScheduler.getActiveAlarms()
+                if (activeAlarms.isNotEmpty()) {
+                    for (alarm in activeAlarms) {
+                        alarmScheduler.cancelAlarm(alarm)
+                    }
+                    ActionResult.Handled("Sabhi active alarms cancel kar diye gaye hain.")
+                } else {
+                    ActionResult.Handled("Koi active alarm nahi mila.")
+                }
+            }
+        } catch (e: Exception) {
+            ActionResult.Failed("Alarm cancel nahi ho saka: ${e.localizedMessage}")
         }
     }
 

@@ -85,6 +85,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.model.ActionType
 import com.example.data.model.AssistantState
 import com.example.data.model.PendingAction
 import com.example.ui.components.ChatBubble
@@ -827,6 +828,36 @@ fun ActionConfirmationCard(
                             )
                         }
                     }
+                    is PendingAction.DisambiguateContact -> {
+                        Surface(
+                            shape = CircleShape,
+                            color = AkritiIndigoPrimary.copy(alpha = 0.2f),
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = if (pendingAction.targetAction == ActionType.WHATSAPP_MESSAGE) Icons.AutoMirrored.Filled.Send else Icons.Default.Call,
+                                    contentDescription = "Contact Selection",
+                                    tint = AkritiIndigoPrimary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (pendingAction.targetAction == ActionType.WHATSAPP_MESSAGE) "WhatsApp Contact Selection" else "Select Contact to Call",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = pendingAction.contacts.take(3).mapIndexed { i, c -> "${i + 1}. ${c.name} (${c.number})" }.joinToString(" • "),
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
             }
 
@@ -874,19 +905,19 @@ fun ActionConfirmationCard(
                     onClick = onConfirm,
                     shape = RoundedCornerShape(20.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (pendingAction is PendingAction.SendWhatsAppMessage) Color(0xFF25D366) else AkritiIndigoPrimary
+                        containerColor = if (pendingAction is PendingAction.SendWhatsAppMessage || (pendingAction is PendingAction.DisambiguateContact && pendingAction.targetAction == ActionType.WHATSAPP_MESSAGE)) Color(0xFF25D366) else AkritiIndigoPrimary
                     ),
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
                 ) {
                     Icon(
-                        imageVector = if (pendingAction is PendingAction.SendWhatsAppMessage) Icons.AutoMirrored.Filled.Send else Icons.Default.Call,
+                        imageVector = if (pendingAction is PendingAction.SendWhatsAppMessage || (pendingAction is PendingAction.DisambiguateContact && pendingAction.targetAction == ActionType.WHATSAPP_MESSAGE)) Icons.AutoMirrored.Filled.Send else Icons.Default.Call,
                         contentDescription = null,
                         tint = Color.White,
                         modifier = Modifier.size(14.dp)
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = if (pendingAction is PendingAction.SendWhatsAppMessage) "Send karein" else "Call lagayein",
+                        text = if (pendingAction is PendingAction.SendWhatsAppMessage) "Send karein" else if (pendingAction is PendingAction.DisambiguateContact) "Pehla select karein" else "Call lagayein",
                         fontSize = 11.sp,
                         color = Color.White
                     )

@@ -11,4 +11,10 @@ sealed class PendingAction {
         val contactName: String,
         val phoneNumber: String
     ) : PendingAction()
+
+    data class DisambiguateContact(
+        val contacts: List<ContactMatch>,
+        val targetAction: ActionType,
+        val pendingMessage: String? = null
+    ) : PendingAction()
 }
